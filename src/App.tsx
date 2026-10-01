@@ -77,8 +77,8 @@ export function App() {
     const startTime = Date.now();
 
     try {
-      // 1. Get base64 representation
-      const { base64, mimeType } = await fileToOptimizedBase64(currentItem.file);
+      // 1. Get base64 representation with alpha transparency detection
+      const { base64, mimeType, isTransparent } = await fileToOptimizedBase64(currentItem.file);
 
       // 2. Send to Gemini Vision AI
       const result = await analyzeImageForAdobeStock(
@@ -86,7 +86,8 @@ export function App() {
         mimeType,
         currentItem.fileName,
         settings.geminiApiKey,
-        settings.model || 'gemini-3.8-flash'
+        settings.model || 'gemini-3.5-flash-lite',
+        isTransparent
       );
 
       // Record quota consumption in real time

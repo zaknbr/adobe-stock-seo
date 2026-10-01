@@ -1,9 +1,11 @@
 /**
- * Reads a File and produces a lightweight scaled-down base64 string for Gemini Vision AI
- * (e.g. max 1024x1024 to save memory and token latency while retaining maximum detail)
+ * Reads a File and produces a lightweight scaled-down base64 string for Gemini Vision AI,
+ * properly preserving alpha channel transparency for PNG images so they aren't turned into black backgrounds.
  */
-export async function fileToOptimizedBase64(file: File): Promise<{ base64: string; mimeType: string }> {
+export async function fileToOptimizedBase64(file: File): Promise<{ base64: string; mimeType: string; isTransparent: boolean }> {
   return new Promise((resolve, reject) => {
+    const isPngFile = file.type === 'image/png' || file.name.toLowerCase().endsWith('.png');
+
     // If it's a video file, generate a video thumbnail frame
     if (file.type.startsWith('video/')) {
       const video = document.createElement('video');
@@ -44,7 +46,8 @@ export async function fileToOptimizedBase64(file: File): Promise<{ base64: strin
             URL.revokeObjectURL(url);
             resolve({
               base64: dataUrl.split('base64,')[1] || dataUrl,
-              mimeType: 'image/jpeg'
+              mimeType: 'image/jpeg',
+              isTransparent: false
             });
           } else {
             URL.revokeObjectURL(url);
@@ -87,19 +90,53 @@ export async function fileToOptimizedBase64(file: File): Promise<{ base64: strin
 
         canvas.width = width;
         canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(img, 0, 0, width, height);
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-          URL.revokeObjectURL(objectUrl);
-          resolve({
-            base64: dataUrl.split('base64,')[1] || dataUrl,
-            mimeType: 'image/jpeg'
-          });
-        } else {
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) {
           URL.revokeObjectURL(objectUrl);
           reject(new Error('Canvas context could not be created'));
+          return;
         }
+
+        ctx.drawImage(img, 0, 0, width, height);
+
+        // Detect if image contains transparency
+        let hasTransparency = isPngFile;
+        if (isPngFile) {
+          try {
+            const imgData = ctx.getImageData(0, 0, width, height);
+            const data = imgData.data;
+            // Sample pixels to confirm transparency (alpha channel < 250)
+            for (let i = 3; i < data.length; i += 16) {
+              if (data[i] < 250) {
+                hasTransparency = true;
+                break;
+              }
+            }
+          } catch (e) {
+            // Ignore security/CORS error if any and default to true for PNG
+            hasTransparency = true;
+          }
+        }
+
+        let dataUrl: string;
+        let mimeType: string;
+
+        if (hasTransparency) {
+          // Export as PNG so transparency is 100% preserved
+          dataUrl = canvas.toDataURL('image/png');
+          mimeType = 'image/png';
+        } else {
+          // Export as high quality JPEG for non-transparent images
+          dataUrl = canvas.toDataURL('image/jpeg', 0.88);
+          mimeType = 'image/jpeg';
+        }
+
+        URL.revokeObjectURL(objectUrl);
+        resolve({
+          base64: dataUrl.split('base64,')[1] || dataUrl,
+          mimeType,
+          isTransparent: hasTransparency
+        });
       } catch (err) {
         URL.revokeObjectURL(objectUrl);
         reject(err);

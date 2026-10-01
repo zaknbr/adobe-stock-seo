@@ -96,12 +96,14 @@ export const ItemCard: React.FC<ItemCardProps> = ({
         {/* Left Column: Image Thumbnail & Meta Info */}
         <div className="w-full lg:w-48 shrink-0 flex flex-row lg:flex-col gap-3">
           
-          <div className="relative w-28 h-28 sm:w-36 sm:h-36 lg:w-full lg:h-44 rounded-xl bg-[#0C0D14] border border-[#23263B] overflow-hidden group shrink-0 flex items-center justify-center">
+          <div className={`relative w-28 h-28 sm:w-36 sm:h-36 lg:w-full lg:h-44 rounded-xl border border-[#23263B] overflow-hidden group shrink-0 flex items-center justify-center ${
+            item.fileName.toLowerCase().endsWith('.png') || item.fileType === 'image/png' ? 'bg-checkerboard' : 'bg-[#0C0D14]'
+          }`}>
             {item.previewUrl ? (
               <img
                 src={item.previewUrl}
                 alt={item.fileName}
-                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                className="w-full h-full object-contain p-1 group-hover:scale-105 transition-transform duration-300"
               />
             ) : (
               <div className="text-gray-600 text-xs font-mono">No Preview</div>
@@ -111,6 +113,13 @@ export const ItemCard: React.FC<ItemCardProps> = ({
             <div className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-black/75 backdrop-blur-sm text-white font-mono text-[10px] font-bold">
               #{index + 1}
             </div>
+
+            {/* PNG Cutout Badge */}
+            {(item.fileName.toLowerCase().endsWith('.png') || item.fileType === 'image/png') && (
+              <div className="absolute top-2 right-2 px-1.5 py-0.5 rounded bg-indigo-500/80 backdrop-blur-sm text-white font-mono text-[9px] font-bold">
+                PNG Cutout
+              </div>
+            )}
 
             {/* Status Overlay */}
             {item.status === 'processing' && (
