@@ -75,59 +75,15 @@ export async function fetchAvailableModels(apiKey: string): Promise<string[]> {
 }
 
 /**
- * Execute single request with retry for temporary high demand (503 / 429)
+ * Extract retry duration in seconds if present in rate limit error string
  */
-async function callGeminiApiWithRetry(
-  url: string,
-  requestBody: any,
-  maxRetries: number = 2
-): Promise<any> {
-  let lastError: any = null;
-
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(requestBody)
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => null);
-        const errorMsg = errorData?.error?.message || `HTTP ${response.status} ${response.statusText}`;
-
-        const isTransient =
-          response.status === 429 ||
-          response.status === 503 ||
-          errorMsg.toLowerCase().includes('high demand') ||
-          errorMsg.toLowerCase().includes('quota') ||
-          errorMsg.toLowerCase().includes('overloaded') ||
-          errorMsg.toLowerCase().includes('resource has been exhausted');
-
-        if (isTransient && attempt < maxRetries) {
-          const delayMs = attempt * 1200;
-          console.warn(`Gemini API busy (${errorMsg}). Retrying in ${delayMs}ms...`);
-          await new Promise(r => setTimeout(r, delayMs));
-          continue;
-        }
-
-        throw new Error(errorMsg);
-      }
-
-      return await response.json();
-    } catch (err: any) {
-      lastError = err;
-      if (attempt < maxRetries && (err.message?.includes('high demand') || err.message?.includes('fetch'))) {
-        await new Promise(r => setTimeout(r, attempt * 1200));
-        continue;
-      }
-      break;
-    }
+function extractRetrySeconds(errorMsg: string): number {
+  const match = errorMsg.match(/retry in\s+([\d.]+)\s*s/i);
+  if (match && match[1]) {
+    const s = parseFloat(match[1]);
+    return isNaN(s) ? 3 : Math.min(s, 60);
   }
-
-  throw lastError || new Error('Failed to reach Gemini API after retries.');
+  return 3;
 }
 
 /**
@@ -137,7 +93,6 @@ function trimTitleSafely(title: string): string {
   let clean = title.trim().replace(/^["']|["']$/g, '');
   if (clean.length <= 200) return clean;
 
-  // Trim to last space before 200 chars
   const sliced = clean.substring(0, 199);
   const lastSpace = sliced.lastIndexOf(' ');
   if (lastSpace > 160) {
@@ -195,7 +150,19 @@ export async function analyzeImageForAdobeStock(
     ? preferredModel.replace('models/', '').trim()
     : 'gemini-3.8-flash';
 
-  const modelsToTry: string[] = [activeModel, 'gemini-3.8-flash', ...cachedDiscoveredModels];
+  // Priority model sequence based on your active Google AI Studio dashboard:
+  // 1. Preferred model (e.g. gemini-3.8-flash)
+  // 2. Gemini 3.5 Flash Lite (Separate quota pool, ultra fast, no 429 lock)
+  // 3. Gemini 3.5 Flash / Gemini 2.0 Flash
+  const modelsToTry: string[] = [
+    activeModel,
+    'gemini-3.5-flash-lite',
+    'gemini-3.8-flash',
+    'gemini-3.5-flash',
+    'gemini-2.0-flash',
+    ...cachedDiscoveredModels
+  ];
+
   const uniqueModels = Array.from(new Set(modelsToTry.filter(Boolean)));
 
   let lastError: any = null;
@@ -203,8 +170,26 @@ export async function analyzeImageForAdobeStock(
   for (const model of uniqueModels) {
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey.trim()}`;
-      const data = await callGeminiApiWithRetry(url, requestBody, 2);
       
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(requestBody)
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => null);
+        const errorMsg = errorData?.error?.message || `HTTP ${response.status} ${response.statusText}`;
+
+        // If rate limited on this specific model, instantly try the next model in the pool!
+        console.warn(`Model ${model} returned error (${errorMsg}). Trying alternative model...`);
+        lastError = new Error(errorMsg);
+        continue;
+      }
+
+      const data = await response.json();
       const textOutput = data?.candidates?.[0]?.content?.parts?.[0]?.text;
       if (!textOutput) {
         throw new Error(`Empty response from model ${model}.`);
@@ -212,7 +197,7 @@ export async function analyzeImageForAdobeStock(
 
       const parsed = JSON.parse(textOutput);
       
-      // Clean and safe trim Title to 180-200 characters max
+      // Clean and safe trim Title to 180-200 characters
       const title = trimTitleSafely(parsed.title || '');
 
       // Clean Keywords
@@ -253,5 +238,5 @@ export async function analyzeImageForAdobeStock(
     }
   }
 
-  throw lastError || new Error('All Gemini model requests failed. Please check your API key and network connection.');
+  throw lastError || new Error('All model requests failed. Please check your API key.');
 }

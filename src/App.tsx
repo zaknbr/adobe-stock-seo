@@ -153,14 +153,15 @@ export function App() {
         const availableSlots = concurrencyLimit - activeProcessing.length;
         if (availableSlots > 0 && pendingItems.length > 0) {
           const nextBatch = pendingItems.slice(0, availableSlots);
-          // Trigger batch
-          nextBatch.forEach(item => {
+          // Trigger batch with smooth dispatch pacing to respect RPM limits
+          for (const item of nextBatch) {
             processSingleItem(item.id);
-          });
+            await new Promise(r => setTimeout(r, 900));
+          }
         }
 
-        // Small delay between checks
-        await new Promise(r => setTimeout(r, 600));
+        // Delay between loop checks
+        await new Promise(r => setTimeout(r, 800));
       }
     };
 
