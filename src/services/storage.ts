@@ -4,7 +4,7 @@ const SETTINGS_KEY = 'adobe_stock_seo_settings_v1';
 
 export const DEFAULT_SETTINGS: AppSettings = {
   geminiApiKey: '',
-  model: 'gemini-3.8-flash',
+  model: 'gemini-3.5-flash-lite',
   concurrency: 2,
   autoStartOnUpload: true,
   targetKeywordCount: 50,
@@ -16,9 +16,8 @@ export function loadSettings(): AppSettings {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      // Auto upgrade deprecated model name if found
-      if (parsed.model === 'gemini-2.5-flash') {
-        parsed.model = 'gemini-3.8-flash';
+      if (parsed.model === 'gemini-2.5-flash' || parsed.model === 'gemini-1.5-flash') {
+        parsed.model = 'gemini-3.5-flash-lite';
       }
       return { ...DEFAULT_SETTINGS, ...parsed };
     }

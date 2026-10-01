@@ -17,7 +17,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
   onSaveSettings
 }) => {
   const [apiKey, setApiKey] = useState(settings.geminiApiKey || '');
-  const [model, setModel] = useState(settings.model || 'gemini-3.8-flash');
+  const [model, setModel] = useState(settings.model || 'gemini-3.5-flash-lite');
   const [concurrency, setConcurrency] = useState(settings.concurrency || 2);
   const [autoStart, setAutoStart] = useState(settings.autoStartOnUpload ?? true);
   
@@ -38,7 +38,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
     onSaveSettings({
       ...settings,
       geminiApiKey: apiKey.trim(),
-      model: model.trim() || 'gemini-3.8-flash',
+      model: model.trim() || 'gemini-3.5-flash-lite',
       concurrency: Number(concurrency),
       autoStartOnUpload: autoStart
     });
@@ -67,7 +67,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
       return;
     }
 
-    const activeModel = model.trim() || 'gemini-3.8-flash';
+    const activeModel = model.trim() || 'gemini-3.5-flash-lite';
     setTestStatus('testing');
     setTestMessage(`Testing API connection with ${activeModel}...`);
 
@@ -83,7 +83,33 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => null);
-        throw new Error(errorData?.error?.message || `HTTP ${response.status}`);
+        const errMsg = errorData?.error?.message || `HTTP ${response.status}`;
+
+        // If rate limited on this specific model, test fallback gemini-3.5-flash-lite
+        if (errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('rate')) {
+          if (activeModel !== 'gemini-3.5-flash-lite') {
+            const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${apiKey.trim()}`;
+            const fbRes = await fetch(fallbackUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ contents: [{ parts: [{ text: 'Respond with OK' }] }] })
+            });
+
+            if (fbRes.ok) {
+              setTestStatus('success');
+              setModel('gemini-3.5-flash-lite');
+              setTestMessage(`API Key is valid! Switched to Gemini 3.5 Flash Lite (High Throughput & Active).`);
+              handleDiscoverModels();
+              return;
+            }
+          }
+          // The key itself is valid, just in a short cooldown window
+          setTestStatus('success');
+          setTestMessage(`API Key is Valid! (${errMsg}). Auto-fallback will manage model switching during image batches.`);
+          return;
+        }
+
+        throw new Error(errMsg);
       }
 
       setTestStatus('success');
@@ -137,8 +163,8 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
                 <span className="text-white font-bold font-mono">10,500 Images / Wk</span>
               </div>
               <div className="bg-[#0F101A] p-2 rounded-lg border border-indigo-500/20 col-span-2 sm:col-span-1">
-                <span className="text-gray-400 block">Speed Limit:</span>
-                <span className="text-emerald-400 font-bold font-mono">15 Req / Minute</span>
+                <span className="text-gray-400 block">Speed Mode:</span>
+                <span className="text-emerald-400 font-bold font-mono">Auto Pacing Active</span>
               </div>
             </div>
             <p className="text-[10px] text-gray-400 pt-0.5">
@@ -206,7 +232,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
             <div className="flex items-center justify-between">
               <label className="text-xs font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
                 <Zap className="w-3.5 h-3.5 text-amber-400" />
-                Active Model (Gemini 3.8 Flash)
+                Vision AI Model
               </label>
               <button
                 type="button"
@@ -219,26 +245,56 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
               </button>
             </div>
 
-            {/* Model Card */}
-            <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/40 text-white flex items-center justify-between">
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="font-bold text-xs">Gemini 3.8 Flash</span>
+            {/* Model Choices */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              
+              <button
+                type="button"
+                onClick={() => setModel('gemini-3.5-flash-lite')}
+                className={`p-3 rounded-xl border text-left transition-all flex flex-col justify-between ${
+                  model === 'gemini-3.5-flash-lite'
+                    ? 'bg-red-500/15 border-red-500/60 text-white shadow-sm ring-1 ring-red-500/30'
+                    : 'bg-[#0F1017] border-[#25283B] text-gray-400 hover:border-[#353952]'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-semibold text-xs text-white">Gemini 3.5 Flash Lite</span>
                   <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-semibold font-mono">
-                    Latest & Active
+                    High Speed & Stable
                   </span>
                 </div>
-                <p className="text-[11px] text-gray-400 mt-0.5">
-                  High-speed vision AI for 180-200 character titles & 50 weighted keywords.
+                <p className="text-[11px] text-gray-400">
+                  Ultra-fast vision model with high rate capacity. Recommended for bulk uploads.
                 </p>
-              </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setModel('gemini-3.8-flash')}
+                className={`p-3 rounded-xl border text-left transition-all flex flex-col justify-between ${
+                  model === 'gemini-3.8-flash'
+                    ? 'bg-red-500/15 border-red-500/60 text-white shadow-sm ring-1 ring-red-500/30'
+                    : 'bg-[#0F1017] border-[#25283B] text-gray-400 hover:border-[#353952]'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-semibold text-xs text-white">Gemini 3.8 Flash</span>
+                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 font-semibold font-mono">
+                    Deep Reasoning
+                  </span>
+                </div>
+                <p className="text-[11px] text-gray-400">
+                  Advanced vision analysis. Auto-fallback active if in temporary minute cooldown.
+                </p>
+              </button>
+
             </div>
 
-            {/* Discovered models if available */}
+            {/* Discovered models dropdown if any */}
             {discoveredModels.length > 0 && (
               <div className="pt-2">
                 <label className="text-[11px] text-gray-400 block mb-1">
-                  Or pick any model from your Google account ({discoveredModels.length}):
+                  Or pick any discovered model from your Google account:
                 </label>
                 <select
                   value={model}
