@@ -476,8 +476,10 @@ export function App() {
       {/* Footer */}
       <footer className="border-t border-[#1C1E2D] py-4 text-center text-xs text-gray-500 bg-[#10111A]">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-          <span>Adobe Stock AI SEO Metadata Generator • Built for maximum contributor sales</span>
-          <span className="text-gray-400 font-mono text-[11px]">Ready for smartconverterbd.com deployment</span>
+          <span>Adobe Stock AI SEO Metadata & Bulk CSV Generator</span>
+          <span className="text-gray-300 font-medium text-xs">
+            Developed by <span className="text-amber-400 font-bold">ZAKARIA MASUD</span> • smartconverterbd.com
+          </span>
         </div>
       </footer>
 
