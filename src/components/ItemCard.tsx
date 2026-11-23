@@ -103,6 +103,8 @@ export const ItemCard: React.FC<ItemCardProps> = ({
               <img
                 src={item.previewUrl}
                 alt={item.fileName}
+                loading="lazy"
+                decoding="async"
                 className="w-full h-full object-contain p-1 group-hover:scale-105 transition-transform duration-300"
               />
             ) : (

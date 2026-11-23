@@ -84,19 +84,18 @@ export function App() {
     const currentSettings = settingsRef.current;
 
     try {
-      // 1. Compress all images in the batch in parallel (640px WebP/JPEG takes < 80ms!)
-      const preparedInputs: BatchImageInput[] = await Promise.all(
-        targetItems.map(async item => {
-          const { base64, mimeType, isTransparent } = await fileToOptimizedBase64(item.file);
-          return {
-            id: item.id,
-            base64Data: base64,
-            mimeType,
-            fileName: item.fileName,
-            isTransparent
-          };
-        })
-      );
+      // 1. Compress images in the batch sequentially (using off-main-thread createImageBitmap)
+      const preparedInputs: BatchImageInput[] = [];
+      for (const item of targetItems) {
+        const { base64, mimeType, isTransparent } = await fileToOptimizedBase64(item.file);
+        preparedInputs.push({
+          id: item.id,
+          base64Data: base64,
+          mimeType,
+          fileName: item.fileName,
+          isTransparent
+        });
+      }
 
       // 2. Analyze the entire batch in ONE Gemini Vision call
       const resultsMap = await analyzeBatchForAdobeStock(
