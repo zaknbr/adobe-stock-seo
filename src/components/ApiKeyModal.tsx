@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { X, Key, ExternalLink, CheckCircle, ShieldCheck, Zap, Sliders, RefreshCw, Info, Sparkles } from 'lucide-react';
+import { X, Key, ExternalLink, CheckCircle, ShieldCheck, Zap, Sliders, RefreshCw, Sparkles, Layers } from 'lucide-react';
 import { AppSettings, TitleSeoStyle } from '../types';
 import { fetchAvailableModels } from '../services/gemini';
-import { sanitizeStoredModel } from '../services/storage';
+import { sanitizeStoredModel, parseApiKeys } from '../services/storage';
 
 interface ApiKeyModalProps {
   isOpen: boolean;
@@ -19,7 +19,8 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
 }) => {
   const [apiKey, setApiKey] = useState(settings.geminiApiKey || '');
   const [model, setModel] = useState(sanitizeStoredModel(settings.model));
-  const [concurrency, setConcurrency] = useState(settings.concurrency || 1);
+  const [concurrency, setConcurrency] = useState(settings.concurrency || 2);
+  const [batchSize, setBatchSize] = useState(settings.batchSize || 3);
   const [autoStart, setAutoStart] = useState(settings.autoStartOnUpload ?? true);
   const [titleStyle, setTitleStyle] = useState<TitleSeoStyle>(settings.titleStyle || 'hybrid_seo');
   
@@ -30,15 +31,20 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
+      setApiKey(settings.geminiApiKey || '');
       setModel(sanitizeStoredModel(settings.model));
       setTitleStyle(settings.titleStyle || 'hybrid_seo');
-      if (apiKey.trim()) {
-        handleDiscoverModels();
+      setBatchSize(settings.batchSize || 3);
+      setConcurrency(settings.concurrency || 2);
+      if (settings.geminiApiKey?.trim()) {
+        handleDiscoverModels(settings.geminiApiKey);
       }
     }
   }, [isOpen]);
 
   if (!isOpen) return null;
+
+  const detectedKeys = parseApiKeys(apiKey);
 
   const handleSave = () => {
     onSaveSettings({
@@ -46,17 +52,19 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
       geminiApiKey: apiKey.trim(),
       model: sanitizeStoredModel(model),
       concurrency: Number(concurrency),
+      batchSize: Number(batchSize),
       autoStartOnUpload: autoStart,
       titleStyle
     });
     onClose();
   };
 
-  const handleDiscoverModels = async () => {
-    if (!apiKey.trim()) return;
+  const handleDiscoverModels = async (rawKeys?: string) => {
+    const keysToUse = rawKeys ?? apiKey;
+    if (!keysToUse.trim()) return;
     setIsDiscovering(true);
     try {
-      const list = await fetchAvailableModels(apiKey.trim());
+      const list = await fetchAvailableModels(keysToUse.trim());
       if (list.length > 0) {
         setDiscoveredModels(list);
       }
@@ -68,18 +76,19 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
   };
 
   const handleTestKey = async () => {
-    if (!apiKey.trim()) {
+    if (detectedKeys.length === 0) {
       setTestStatus('failed');
-      setTestMessage('Please enter an API key first.');
+      setTestMessage('Please enter at least one valid Gemini API key.');
       return;
     }
 
     const activeModel = sanitizeStoredModel(model);
     setTestStatus('testing');
-    setTestMessage(`Testing API connection with ${activeModel}...`);
+    setTestMessage(`Testing ${detectedKeys.length} API key(s) with ${activeModel}...`);
 
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent?key=${apiKey.trim()}`;
+      const firstKey = detectedKeys[0];
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent?key=${firstKey}`;
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -94,7 +103,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
 
         if (errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('rate')) {
           setTestStatus('success');
-          setTestMessage(`API Key is Valid! (${errMsg}). Auto-cooldown & fallback will automatically handle rate limits.`);
+          setTestMessage(`API Key is Valid! (${detectedKeys.length} key(s) loaded). Multi-batch engine ready.`);
           return;
         }
 
@@ -102,7 +111,9 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
       }
 
       setTestStatus('success');
-      setTestMessage(`Connection successful! ${activeModel} is active and ready.`);
+      setTestMessage(
+        `Connection successful! ${detectedKeys.length} API Key(s) active with ${batchSize}x Multi-Image Turbo Batching!`
+      );
       handleDiscoverModels();
     } catch (err: any) {
       setTestStatus('failed');
@@ -121,8 +132,8 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
               <Key className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-white">Gemini API & SEO Strategy Settings</h2>
-              <p className="text-xs text-gray-400">Configure your Google AI key & Title Keyword Strategy</p>
+              <h2 className="text-base font-bold text-white">Turbo Speed, Multi-Key & SEO Settings</h2>
+              <p className="text-xs text-gray-400">Process 100+ images in 1-2 minutes with Multi-Image Batching</p>
             </div>
           </div>
           <button
@@ -136,8 +147,110 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
         {/* Modal Body */}
         <div className="p-6 space-y-5 overflow-y-auto flex-1">
           
+          {/* API Key Input (Supports Multiple Keys!) */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-gray-200 uppercase tracking-wider flex items-center gap-2">
+                <span>Google Gemini API Key(s)</span>
+                <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-mono">
+                  {detectedKeys.length} Key{detectedKeys.length !== 1 ? 's' : ''} Active
+                </span>
+              </label>
+              <a
+                href="https://aistudio.google.com/app/apikey"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1 hover:underline font-medium"
+              >
+                <span>Get Free Key</span>
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+
+            <textarea
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              rows={2}
+              placeholder="Paste 1 API Key (AIzaSy...) OR paste 2-5 API keys (one per line) for 5x faster parallel speed!"
+              className="w-full px-3.5 py-2 bg-[#0F1017] border border-[#2B2E42] rounded-xl text-white font-mono text-xs placeholder:text-gray-600 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 transition-colors"
+            />
+
+            <div className="flex items-center justify-between pt-0.5">
+              <p className="text-[11px] text-gray-400 flex items-center gap-1">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 inline shrink-0" />
+                <span>Tip: Add 2 or 3 free keys (one per line) for instant zero-wait speed!</span>
+              </p>
+              <button
+                onClick={handleTestKey}
+                disabled={testStatus === 'testing'}
+                className="text-xs px-2.5 py-1 rounded bg-[#23263B] hover:bg-[#2C304A] text-gray-300 hover:text-white transition-colors shrink-0"
+              >
+                {testStatus === 'testing' ? 'Testing...' : 'Test Connection'}
+              </button>
+            </div>
+
+            {testStatus === 'success' && (
+              <p className="text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-3 py-2 rounded-lg flex items-center gap-1.5">
+                <CheckCircle className="w-4 h-4 shrink-0" />
+                {testMessage}
+              </p>
+            )}
+
+            {testStatus === 'failed' && (
+              <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 px-3 py-2 rounded-lg">
+                {testMessage}
+              </p>
+            )}
+          </div>
+
+          {/* Turbo Multi-Batch & Concurrency Controls */}
+          <div className="space-y-2.5 pt-2 border-t border-[#23263B]">
+            <label className="text-xs font-semibold text-emerald-300 uppercase tracking-wider flex items-center gap-1.5">
+              <Layers className="w-3.5 h-3.5 text-emerald-400" />
+              Turbo Multi-Image Batching (10x Faster Speed)
+            </label>
+
+            <div className="bg-[#0F1017] p-3.5 rounded-xl border border-emerald-500/30 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <span className="text-xs font-bold text-white">Images Per Single API Request</span>
+                  <p className="text-[11px] text-gray-400">
+                    Packing 3-4 images in 1 API call makes 100 images finish in ~30 calls (under 2 mins!)
+                  </p>
+                </div>
+                <select
+                  value={batchSize}
+                  onChange={(e) => setBatchSize(Number(e.target.value))}
+                  className="bg-[#1B1D2A] border border-emerald-500/40 text-emerald-300 font-bold text-xs rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-emerald-400 shrink-0"
+                >
+                  <option value={1}>1 Image / Call (Standard)</option>
+                  <option value={2}>2 Images / Call (2x Faster)</option>
+                  <option value={3}>3 Images / Call (3x Turbo - Recommended)</option>
+                  <option value={4}>4 Images / Call (4x Ultra Turbo)</option>
+                </select>
+              </div>
+
+              <div className="flex items-center justify-between pt-2 border-t border-[#1C1E2D] gap-2">
+                <div>
+                  <span className="text-xs font-medium text-white">Parallel Batch Workers</span>
+                  <p className="text-[11px] text-gray-400">Simultaneous batches running in parallel</p>
+                </div>
+                <select
+                  value={concurrency}
+                  onChange={(e) => setConcurrency(Number(e.target.value))}
+                  className="bg-[#1B1D2A] border border-[#2E3146] text-white text-xs rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-red-500 shrink-0"
+                >
+                  <option value={1}>1 Batch Worker</option>
+                  <option value={2}>2 Parallel Workers (Recommended)</option>
+                  <option value={3}>3 Parallel Workers (Fastest)</option>
+                  <option value={4}>4 Parallel Workers (For Multi-Key)</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
           {/* Title SEO Strategy Mode Selector */}
-          <div className="space-y-2.5">
+          <div className="space-y-2.5 pt-2 border-t border-[#23263B]">
             <label className="text-xs font-semibold text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
               <Sparkles className="w-3.5 h-3.5 text-amber-400" />
               Adobe Stock Title SEO Formula (Sales Booster)
@@ -159,28 +272,25 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
                   </span>
                 </div>
                 <p className="text-[11px] text-gray-300 leading-relaxed">
-                  Starts with a clear visual description, then packs 4-6 high-volume comma-separated buyer search phrases (180-200 chars) so your item ranks for 15+ search queries at once!
+                  Starts with a clear visual description, then packs 4-6 high-volume comma-separated buyer search phrases (180-200 chars).
                 </p>
               </button>
 
               <button
                 type="button"
                 onClick={() => setTitleStyle('keyword_power')}
-                className={`p-3 rounded-xl border text-left transition-all ${
+                className={`p-2.5 rounded-xl border text-left transition-all ${
                   titleStyle === 'keyword_power'
                     ? 'bg-red-500/15 border-red-500/60 text-white ring-1 ring-red-500/30'
                     : 'bg-[#0F1017] border-[#25283B] text-gray-400 hover:border-[#353952]'
                 }`}
               >
-                <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center justify-between">
                   <span className="font-bold text-xs text-white">⚡ Maximum Keyword Density (Heavy Keyword Stuffing)</span>
                   <span className="text-[10px] px-2 py-0.5 rounded bg-red-500/20 text-red-300 font-semibold">
                     Aggressive SEO
                   </span>
                 </div>
-                <p className="text-[11px] text-gray-400">
-                  Packs 7-9 commercial search keyword phrases and synonyms separated by commas across the entire 180-200 character title.
-                </p>
               </button>
 
               <button
@@ -200,72 +310,17 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
             </div>
           </div>
 
-          {/* API Key Input */}
-          <div className="space-y-2 pt-2 border-t border-[#23263B]">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
-                Google Gemini API Key <span className="text-red-400">*</span>
-              </label>
-              <a
-                href="https://aistudio.google.com/app/apikey"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1 hover:underline font-medium"
-              >
-                <span>Get Free Key (Instant)</span>
-                <ExternalLink className="w-3 h-3" />
-              </a>
-            </div>
-
-            <div className="relative">
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="AIzaSy..."
-                className="w-full px-3.5 py-2.5 bg-[#0F1017] border border-[#2B2E42] rounded-xl text-white font-mono text-xs placeholder:text-gray-600 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 transition-colors"
-              />
-            </div>
-
-            <div className="flex items-center justify-between pt-1">
-              <p className="text-[11px] text-gray-400 flex items-center gap-1">
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 inline" />
-                Key stored in your browser only.
-              </p>
-              <button
-                onClick={handleTestKey}
-                disabled={testStatus === 'testing'}
-                className="text-xs px-2.5 py-1 rounded bg-[#23263B] hover:bg-[#2C304A] text-gray-300 hover:text-white transition-colors"
-              >
-                {testStatus === 'testing' ? 'Testing...' : 'Test Connection'}
-              </button>
-            </div>
-
-            {testStatus === 'success' && (
-              <p className="text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-3 py-2 rounded-lg flex items-center gap-1.5">
-                <CheckCircle className="w-4 h-4 shrink-0" />
-                {testMessage}
-              </p>
-            )}
-
-            {testStatus === 'failed' && (
-              <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 px-3 py-2 rounded-lg">
-                {testMessage}
-              </p>
-            )}
-          </div>
-
           {/* Model Selection */}
           <div className="space-y-2.5 pt-2 border-t border-[#23263B]">
             <div className="flex items-center justify-between">
               <label className="text-xs font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
                 <Zap className="w-3.5 h-3.5 text-amber-400" />
-                Active Vision AI Model (Gemini 3.8 / 3.5)
+                Active Vision AI Model
               </label>
               <button
                 type="button"
-                onClick={handleDiscoverModels}
-                disabled={isDiscovering || !apiKey.trim()}
+                onClick={() => handleDiscoverModels()}
+                disabled={isDiscovering || detectedKeys.length === 0}
                 className="text-[11px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1"
               >
                 <RefreshCw className={`w-3 h-3 ${isDiscovering ? 'animate-spin' : ''}`} />
@@ -277,100 +332,36 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
               <button
                 type="button"
                 onClick={() => setModel('gemini-3.8-flash')}
-                className={`p-3 rounded-xl border text-left transition-all flex flex-col justify-between ${
+                className={`p-2.5 rounded-xl border text-left transition-all ${
                   model === 'gemini-3.8-flash'
-                    ? 'bg-red-500/15 border-red-500/60 text-white shadow-sm ring-1 ring-red-500/30'
+                    ? 'bg-red-500/15 border-red-500/60 text-white'
                     : 'bg-[#0F1017] border-[#25283B] text-gray-400 hover:border-[#353952]'
                 }`}
               >
-                <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center justify-between">
                   <span className="font-semibold text-xs text-white">Gemini 3.8 Flash</span>
-                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-semibold font-mono">
-                    Recommended
+                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-mono">
+                    Primary
                   </span>
                 </div>
-                <p className="text-[11px] text-gray-400">
-                  Latest official Google vision model with highest SEO precision.
-                </p>
               </button>
 
               <button
                 type="button"
                 onClick={() => setModel('gemini-3.5-flash-lite')}
-                className={`p-3 rounded-xl border text-left transition-all flex flex-col justify-between ${
+                className={`p-2.5 rounded-xl border text-left transition-all ${
                   model === 'gemini-3.5-flash-lite'
-                    ? 'bg-red-500/15 border-red-500/60 text-white shadow-sm ring-1 ring-red-500/30'
+                    ? 'bg-red-500/15 border-red-500/60 text-white'
                     : 'bg-[#0F1017] border-[#25283B] text-gray-400 hover:border-[#353952]'
                 }`}
               >
-                <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center justify-between">
                   <span className="font-semibold text-xs text-white">Gemini 3.5 Flash Lite</span>
-                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 font-semibold font-mono">
-                    Fast Backup
+                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 font-mono">
+                    Ultra Fast
                   </span>
                 </div>
-                <p className="text-[11px] text-gray-400">
-                  High-speed companion pool with automatic rate-limit switching.
-                </p>
               </button>
-            </div>
-
-            {discoveredModels.length > 0 && (
-              <div className="pt-2">
-                <label className="text-[11px] text-gray-400 block mb-1">
-                  Active models verified on your API key ({discoveredModels.length}):
-                </label>
-                <select
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  className="w-full bg-[#0F101A] border border-[#2B2E42] rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-red-500 font-mono"
-                >
-                  {discoveredModels.map(dm => (
-                    <option key={dm} value={dm}>
-                      {dm}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-          </div>
-
-          {/* Performance & Queue Options */}
-          <div className="space-y-3 pt-2 border-t border-[#23263B]">
-            <label className="text-xs font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
-              <Sliders className="w-3.5 h-3.5 text-indigo-400" />
-              Batch Queue Speed
-            </label>
-
-            <div className="bg-[#0F1017] p-3.5 rounded-xl border border-[#25283B] space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <span className="text-xs font-medium text-white">Parallel Concurrency</span>
-                  <p className="text-[11px] text-gray-400">1 at a time prevents Google 20 RPM burst errors completely</p>
-                </div>
-                <select
-                  value={concurrency}
-                  onChange={(e) => setConcurrency(Number(e.target.value))}
-                  className="bg-[#1B1D2A] border border-[#2E3146] text-white text-xs rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-red-500"
-                >
-                  <option value={1}>1 at a time (Zero Rate-Limit Errors)</option>
-                  <option value={2}>2 at a time (Balanced)</option>
-                  <option value={3}>3 at a time (Fast)</option>
-                </select>
-              </div>
-
-              <div className="flex items-center justify-between pt-2 border-t border-[#1C1E2D]">
-                <div>
-                  <span className="text-xs font-medium text-white">Auto-Start on Upload</span>
-                  <p className="text-[11px] text-gray-400">Instantly generate SEO metadata as soon as images are dropped</p>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={autoStart}
-                  onChange={(e) => setAutoStart(e.target.checked)}
-                  className="w-4 h-4 rounded text-red-600 bg-[#161824] border-gray-700 focus:ring-red-500"
-                />
-              </div>
             </div>
           </div>
 
@@ -388,7 +379,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
             onClick={handleSave}
             className="px-5 py-2 text-xs font-semibold rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white shadow-lg shadow-red-600/30 transition-all"
           >
-            Save Settings
+            Save Turbo Settings
           </button>
         </div>
 

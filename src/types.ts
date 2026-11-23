@@ -33,13 +33,14 @@ export interface ImageMetadataItem {
 }
 
 export interface AppSettings {
-  geminiApiKey: string;
+  geminiApiKey: string; // Can hold single key OR multiple newline/comma-separated keys for load balancing!
   model: string;
-  concurrency: number; // How many images to process simultaneously (default: 2)
+  concurrency: number; // How many batches/images to process simultaneously
+  batchSize: number; // How many images to pack into a single Gemini API request (1 to 4, default 3)
   autoStartOnUpload: boolean;
   targetKeywordCount: number; // Default 50
-  prefixAiStyle: boolean; // Add generative ai keywords
-  titleStyle: TitleSeoStyle; // Hybrid Description + Search Clusters vs Keyword Power vs Descriptive
+  prefixAiStyle: boolean;
+  titleStyle: TitleSeoStyle;
 }
 
 export interface CSVExportRow {

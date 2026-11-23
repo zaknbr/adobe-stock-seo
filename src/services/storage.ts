@@ -15,7 +15,8 @@ const RETIRED_MODELS = new Set([
 export const DEFAULT_SETTINGS: AppSettings = {
   geminiApiKey: '',
   model: 'gemini-3.8-flash',
-  concurrency: 1,
+  concurrency: 2,
+  batchSize: 3, // Pack 3 images per API call = 3x speed & 3x fewer API requests!
   autoStartOnUpload: true,
   targetKeywordCount: 50,
   prefixAiStyle: true,
@@ -31,6 +32,21 @@ export function sanitizeStoredModel(modelName?: string): string {
   return clean;
 }
 
+/**
+ * Extracts an array of clean API keys from a newline or comma-separated string
+ */
+export function parseApiKeys(rawKeys: string): string[] {
+  if (!rawKeys) return [];
+  return Array.from(
+    new Set(
+      rawKeys
+        .split(/[\n,\s]+/)
+        .map(k => k.trim())
+        .filter(k => k.length > 15)
+    )
+  );
+}
+
 export function loadSettings(): AppSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
@@ -39,6 +55,12 @@ export function loadSettings(): AppSettings {
       parsed.model = sanitizeStoredModel(parsed.model);
       if (!parsed.titleStyle) {
         parsed.titleStyle = 'hybrid_seo';
+      }
+      if (!parsed.batchSize || parsed.batchSize < 1 || parsed.batchSize > 5) {
+        parsed.batchSize = 3;
+      }
+      if (!parsed.concurrency || parsed.concurrency < 1) {
+        parsed.concurrency = 2;
       }
       return { ...DEFAULT_SETTINGS, ...parsed };
     }

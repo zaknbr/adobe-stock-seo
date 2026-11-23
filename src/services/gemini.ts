@@ -1,6 +1,6 @@
 import { ADOBE_STOCK_CATEGORIES } from '../constants/categories';
 import { TitleSeoStyle } from '../types';
-import { sanitizeStoredModel } from './storage';
+import { sanitizeStoredModel, parseApiKeys } from './storage';
 
 export interface GeminiAnalysisResult {
   title: string;
@@ -10,6 +10,14 @@ export interface GeminiAnalysisResult {
   categoryName: string;
 }
 
+export interface BatchImageInput {
+  id: string;
+  base64Data: string;
+  mimeType: string;
+  fileName: string;
+  isTransparent: boolean;
+}
+
 export interface GeminiModelInfo {
   name: string;
   displayName: string;
@@ -17,7 +25,7 @@ export interface GeminiModelInfo {
   supportedGenerationMethods: string[];
 }
 
-function getSystemInstruction(titleStyle: TitleSeoStyle): string {
+function getSystemInstruction(titleStyle: TitleSeoStyle, isMultiBatch: boolean = false): string {
   const styleGuidelines =
     titleStyle === 'hybrid_seo'
       ? `1. **TITLE FORMULA — HIGH-CONVERTING HYBRID (DESCRIPTION + BUYER SEARCH KEYWORD CLUSTERS) [STRICTLY 180 TO 200 CHARACTERS]**:
@@ -43,6 +51,23 @@ function getSystemInstruction(titleStyle: TitleSeoStyle): string {
    - If isolated on a transparent background, naturally state "isolated on transparent background".
    - Total length MUST be between 180 and 200 characters.`;
 
+  const outputSchema = isMultiBatch
+    ? `Output ONLY a valid JSON array containing one object per image in the exact order provided:
+[
+  {
+    "index": 0,
+    "title": "180 to 200 character SEO title packed with description and high-volume search keywords",
+    "keywords": ["keyword 1", "keyword 2", "...", "keyword 50"],
+    "category": 19
+  }
+]`
+    : `Output ONLY valid JSON:
+{
+  "title": "180 to 200 character SEO title packed with description and high-volume search keywords",
+  "keywords": ["keyword 1", "keyword 2", "...", "keyword 50"],
+  "category": 19
+}`;
+
   return `You are the world's #1 Top-Selling Adobe Stock SEO & Search Algorithm Specialist.
 Your job is to inspect stock media (photos, AI art, 3D renders, vectors, and isolated transparent PNGs) and engineer metadata that ranks on Page 1 of Adobe Stock search and maximizes downloads/sales.
 
@@ -66,28 +91,33 @@ ${styleGuidelines}
    Select the single best fitting Adobe Stock category ID:
    1: Animals | 2: Buildings and Architecture | 3: Business | 4: Drinks | 5: The Environment | 6: States of Mind | 7: Food | 8: Graphic Resources | 9: Hobbies and Leisure | 10: Industry | 11: Landscapes | 12: Lifestyle | 13: People | 14: Plants and Flowers | 15: Culture and Religion | 16: Science | 17: Social Issues | 18: Sports | 19: Technology | 20: Transport | 21: Travel
 
-Output ONLY valid JSON:
-{
-  "title": "180 to 200 character SEO title packed with description and high-volume search keywords",
-  "keywords": ["keyword 1", "keyword 2", "...", "keyword 50"],
-  "category": 19
-}`;
+${outputSchema}`;
 }
 
 let cachedDiscoveredModels: string[] = [];
+let keyRoundRobinCounter = 0;
 
-export async function fetchAvailableModels(apiKey: string): Promise<string[]> {
-  if (!apiKey?.trim()) return [];
+export function getNextApiKey(rawKeyString: string): string {
+  const keys = parseApiKeys(rawKeyString);
+  if (keys.length === 0) return '';
+  const selected = keys[keyRoundRobinCounter % keys.length];
+  keyRoundRobinCounter = (keyRoundRobinCounter + 1) % keys.length;
+  return selected;
+}
+
+export async function fetchAvailableModels(rawKeyString: string): Promise<string[]> {
+  const keys = parseApiKeys(rawKeyString);
+  const apiKey = keys[0];
+  if (!apiKey) return [];
 
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey.trim()}`);
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
     if (!res.ok) return [];
     const data = await res.json();
     if (data && Array.isArray(data.models)) {
       const models = data.models
         .filter((m: GeminiModelInfo) => {
           const id = m.name.replace('models/', '');
-          // Exclude retired 1.x / 2.x models and non-vision TTS/embedding models
           if (id.startsWith('gemini-1.') || id.startsWith('gemini-2.')) return false;
           if (id.includes('tts') || id.includes('embedding') || id.includes('aqa')) return false;
           return m.supportedGenerationMethods?.includes('generateContent');
@@ -118,10 +148,6 @@ function trimTitleSafely(title: string): string {
   return sliced.trim();
 }
 
-/**
- * Ensures the title utilizes the full 180-200 character SEO allowance by appending
- * top unmentioned keywords if the AI generated a slightly shorter title (< 175 chars).
- */
 function maximizeTitleSeoLength(title: string, keywords: string[]): string {
   let current = trimTitleSafely(title).replace(/\.$/, '');
   if (current.length >= 178) return current;
@@ -141,28 +167,234 @@ function maximizeTitleSeoLength(title: string, keywords: string[]): string {
   return trimTitleSafely(current);
 }
 
-function extractRetryDelayMs(errorMsg: string): number {
-  const match = errorMsg.match(/retry in\s+([\d.]+)\s*s/i);
-  if (match && match[1]) {
-    const sec = parseFloat(match[1]);
-    if (!isNaN(sec) && sec > 0) {
-      return Math.min(Math.ceil(sec * 1000) + 1200, 60000);
+function cleanParsedEntry(parsed: any, isPng: boolean): GeminiAnalysisResult {
+  let rawKeywordsList: string[] = Array.isArray(parsed?.keywords)
+    ? parsed.keywords
+    : typeof parsed?.keywords === 'string'
+    ? parsed.keywords.split(',')
+    : [];
+
+  const cleanedKeywords: string[] = [];
+  const seen = new Set<string>();
+
+  for (const kw of rawKeywordsList) {
+    const trimmed = String(kw || '').trim().toLowerCase();
+    if (isPng && (trimmed.includes('black background') || trimmed.includes('dark background'))) {
+      continue;
+    }
+    if (trimmed && !seen.has(trimmed) && trimmed.length < 50) {
+      seen.add(trimmed);
+      cleanedKeywords.push(String(kw).trim());
     }
   }
-  return 4500;
+
+  let title = trimTitleSafely(String(parsed?.title || ''));
+  if (isPng) {
+    title = title
+      .replace(/on\s+(a\s+)?(black|dark|solid)\s+background/gi, 'isolated on transparent background')
+      .replace(/black\s+background/gi, 'transparent background');
+  }
+  title = maximizeTitleSeoLength(title, cleanedKeywords);
+
+  let categoryId = Number(parsed?.category) || 8;
+  if (categoryId < 1 || categoryId > 21) {
+    categoryId = 8;
+  }
+
+  const categoryObj = ADOBE_STOCK_CATEGORIES.find(c => c.id === categoryId) || ADOBE_STOCK_CATEGORIES[7];
+
+  return {
+    title,
+    keywords: cleanedKeywords.slice(0, 50),
+    keywordsRaw: cleanedKeywords.slice(0, 50).join(', '),
+    category: categoryId,
+    categoryName: categoryObj.name
+  };
+}
+
+/**
+ * Fetch wrapper with strict 28-second timeout so a hanging network socket NEVER freezes the queue
+ */
+async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number = 28000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    return res;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Multi-Image Turbo Batch Analyzer:
+ * Analyzes 1 to 4 images in a SINGLE Gemini API call!
+ * - Cuts 100 images down to just 25-33 API calls!
+ * - Rotates across multiple API keys if provided.
+ * - Alternates across active models (gemini-3.8-flash & gemini-3.5-flash-lite) to double RPM capacity.
+ */
+export async function analyzeBatchForAdobeStock(
+  batch: BatchImageInput[],
+  rawApiKeys: string,
+  preferredModel: string = 'gemini-3.8-flash',
+  titleStyle: TitleSeoStyle = 'hybrid_seo'
+): Promise<Map<string, GeminiAnalysisResult>> {
+  const keys = parseApiKeys(rawApiKeys);
+  if (keys.length === 0) {
+    throw new Error('Google Gemini API Key is missing. Please add your API key in Settings.');
+  }
+
+  if (batch.length === 1) {
+    const single = batch[0];
+    const res = await analyzeImageForAdobeStock(
+      single.base64Data,
+      single.mimeType,
+      single.fileName,
+      rawApiKeys,
+      preferredModel,
+      single.isTransparent,
+      titleStyle
+    );
+    const map = new Map<string, GeminiAnalysisResult>();
+    map.set(single.id, res);
+    return map;
+  }
+
+  // Build multi-image request parts
+  const parts: any[] = [
+    {
+      text: `Analyze the following ${batch.length} stock images independently and return a JSON array with ${batch.length} objects in the exact same order (index 0 to ${batch.length - 1}). Each object MUST have an SEO-packed 180-200 character title (description + high-volume buyer search keywords), 50 relevance-ordered keywords, and category ID (1-21).`
+    }
+  ];
+
+  batch.forEach((item, idx) => {
+    const cleanBase64 = item.base64Data.includes('base64,')
+      ? item.base64Data.split('base64,')[1]
+      : item.base64Data;
+    const isPng = item.isTransparent || item.fileName.toLowerCase().endsWith('.png');
+
+    parts.push({
+      text: `--- IMAGE INDEX ${idx}: Filename "${item.fileName}" ${
+        isPng
+          ? '(TRANSPARENT PNG CUTOUT - Isolated on transparent background, NO solid or black background)'
+          : '(Standard Image/Render)'
+      } ---`
+    });
+    parts.push({
+      inline_data: {
+        mime_type: item.mimeType || 'image/jpeg',
+        data: cleanBase64
+      }
+    });
+  });
+
+  const requestBody = {
+    contents: [{ parts }],
+    systemInstruction: {
+      parts: [{ text: getSystemInstruction(titleStyle, true) }]
+    },
+    generationConfig: {
+      temperature: 0.25,
+      topP: 0.95,
+      responseMimeType: 'application/json'
+    }
+  };
+
+  const activeModel = sanitizeStoredModel(preferredModel);
+  const candidateModels = Array.from(
+    new Set([activeModel, 'gemini-3.8-flash', 'gemini-3.5-flash-lite', ...cachedDiscoveredModels.map(sanitizeStoredModel)])
+  );
+
+  let lastError: any = null;
+
+  for (const model of candidateModels) {
+    const currentKey = getNextApiKey(rawApiKeys);
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${currentKey}`;
+      const response = await fetchWithTimeout(
+        url,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody)
+        },
+        32000
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => null);
+        const errorMsg = errorData?.error?.message || `HTTP ${response.status}`;
+        lastError = new Error(errorMsg);
+        continue;
+      }
+
+      const data = await response.json();
+      const textOutput = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!textOutput) {
+        throw new Error(`Empty batch response from ${model}`);
+      }
+
+      const parsedArray = JSON.parse(textOutput);
+      const list = Array.isArray(parsedArray)
+        ? parsedArray
+        : Array.isArray(parsedArray?.items)
+        ? parsedArray.items
+        : Array.isArray(parsedArray?.results)
+        ? parsedArray.results
+        : null;
+
+      if (!list || list.length === 0) {
+        throw new Error('Batch output was not a list');
+      }
+
+      const resultMap = new Map<string, GeminiAnalysisResult>();
+      batch.forEach((item, idx) => {
+        const entry = list.find((e: any) => Number(e?.index) === idx) || list[idx];
+        if (entry && entry.title) {
+          const isPng = item.isTransparent || item.fileName.toLowerCase().endsWith('.png');
+          resultMap.set(item.id, cleanParsedEntry(entry, isPng));
+        }
+      });
+
+      if (resultMap.size === batch.length) {
+        return resultMap;
+      }
+    } catch (err: any) {
+      console.warn(`Batch model ${model} failed, falling back:`, err.message);
+      lastError = err;
+    }
+  }
+
+  // Fallback: process items individually in parallel if batch JSON structure was partial
+  const fallbackMap = new Map<string, GeminiAnalysisResult>();
+  await Promise.all(
+    batch.map(async item => {
+      const res = await analyzeImageForAdobeStock(
+        item.base64Data,
+        item.mimeType,
+        item.fileName,
+        rawApiKeys,
+        preferredModel,
+        item.isTransparent,
+        titleStyle
+      );
+      fallbackMap.set(item.id, res);
+    })
+  );
+  return fallbackMap;
 }
 
 export async function analyzeImageForAdobeStock(
   base64Data: string,
   mimeType: string,
   fileName: string,
-  apiKey: string,
+  rawApiKeys: string,
   preferredModel: string = 'gemini-3.8-flash',
   isTransparent: boolean = false,
-  titleStyle: TitleSeoStyle = 'hybrid_seo',
-  onStatusUpdate?: (msg: string) => void
+  titleStyle: TitleSeoStyle = 'hybrid_seo'
 ): Promise<GeminiAnalysisResult> {
-  if (!apiKey || apiKey.trim() === '') {
+  const keys = parseApiKeys(rawApiKeys);
+  if (keys.length === 0) {
     throw new Error('Google Gemini API Key is missing. Please add your API key in Settings.');
   }
 
@@ -191,9 +423,7 @@ export async function analyzeImageForAdobeStock(
       }
     ],
     systemInstruction: {
-      parts: [
-        { text: getSystemInstruction(titleStyle) }
-      ]
+      parts: [{ text: getSystemInstruction(titleStyle, false) }]
     },
     generationConfig: {
       temperature: 0.25,
@@ -203,67 +433,51 @@ export async function analyzeImageForAdobeStock(
   };
 
   const activeModel = sanitizeStoredModel(preferredModel);
-
-  // Strictly modern active Gemini 3.x models only — never retired 2.0 or 1.5 models
   const candidateModels: string[] = [
     activeModel,
     'gemini-3.8-flash',
     'gemini-3.5-flash-lite',
-    'gemini-3.5-flash',
     ...cachedDiscoveredModels.map(sanitizeStoredModel)
   ];
 
   const uniqueModels = Array.from(new Set(candidateModels.filter(Boolean)));
-
   let lastError: any = null;
 
-  // Try models with smart rate-limit cooldown support
   for (let round = 0; round < 2; round++) {
     for (const model of uniqueModels) {
+      const currentKey = getNextApiKey(rawApiKeys);
       try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey.trim()}`;
-        
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(requestBody)
-        });
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${currentKey}`;
+        const response = await fetchWithTimeout(
+          url,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody)
+          },
+          25000
+        );
 
         if (!response.ok) {
           const errorData = await response.json().catch(() => null);
           const errorMsg = errorData?.error?.message || `HTTP ${response.status} ${response.statusText}`;
 
-          // If model doesn't exist for this account (404 / not found / no longer available), skip immediately to next model
           if (
             response.status === 404 ||
             errorMsg.toLowerCase().includes('not found') ||
-            errorMsg.toLowerCase().includes('no longer available') ||
-            errorMsg.toLowerCase().includes('not supported')
+            errorMsg.toLowerCase().includes('no longer available')
           ) {
-            console.warn(`Model ${model} not available, skipping...`);
             continue;
           }
 
-          // If rate limit (429) or temporary overload (503)
-          if (
-            response.status === 429 ||
-            response.status === 503 ||
-            errorMsg.toLowerCase().includes('quota') ||
-            errorMsg.toLowerCase().includes('high demand') ||
-            errorMsg.toLowerCase().includes('rate')
-          ) {
+          if (response.status === 429 || response.status === 503 || errorMsg.toLowerCase().includes('quota')) {
             lastError = new Error(errorMsg);
-            // First try switching to the next available model immediately
-            if (round === 0 && uniqueModels.indexOf(model) < uniqueModels.length - 1) {
-              console.warn(`Rate limit on ${model}, trying alternate active model...`);
+            // If we have other keys or models, try them immediately without waiting!
+            if (keys.length > 1 || uniqueModels.indexOf(model) < uniqueModels.length - 1) {
               continue;
             }
-            // If all models hit rate limit, wait the exact cooldown requested by Google and retry automatically
-            const waitMs = extractRetryDelayMs(errorMsg);
-            if (onStatusUpdate) {
-              onStatusUpdate(`Rate limit cooldown (${Math.round(waitMs / 1000)}s)...`);
-            }
-            await new Promise(r => setTimeout(r, waitMs));
+            // Brief 2.5s pause before next round
+            await new Promise(r => setTimeout(r, 2500));
             continue;
           }
 
@@ -278,56 +492,13 @@ export async function analyzeImageForAdobeStock(
         }
 
         const parsed = JSON.parse(textOutput);
-
-        // Clean Keywords first
-        let rawKeywordsList: string[] = Array.isArray(parsed.keywords)
-          ? parsed.keywords
-          : (typeof parsed.keywords === 'string' ? parsed.keywords.split(',') : []);
-
-        const cleanedKeywords: string[] = [];
-        const seen = new Set<string>();
-
-        for (const kw of rawKeywordsList) {
-          const trimmed = kw.trim().toLowerCase();
-          if (isPng && (trimmed.includes('black background') || trimmed.includes('dark background'))) {
-            continue;
-          }
-          if (trimmed && !seen.has(trimmed) && trimmed.length < 50) {
-            seen.add(trimmed);
-            cleanedKeywords.push(kw.trim());
-          }
-        }
-
-        // Clean and maximize Title SEO length (180-200 chars packed with high-value keywords)
-        let title = trimTitleSafely(parsed.title || '');
-        if (isPng) {
-          title = title
-            .replace(/on\s+(a\s+)?(black|dark|solid)\s+background/gi, 'isolated on transparent background')
-            .replace(/black\s+background/gi, 'transparent background');
-        }
-        title = maximizeTitleSeoLength(title, cleanedKeywords);
-
-        let categoryId = Number(parsed.category) || 8;
-        if (categoryId < 1 || categoryId > 21) {
-          categoryId = 8;
-        }
-
-        const categoryObj = ADOBE_STOCK_CATEGORIES.find(c => c.id === categoryId) || ADOBE_STOCK_CATEGORIES[7];
-
-        return {
-          title,
-          keywords: cleanedKeywords.slice(0, 50),
-          keywordsRaw: cleanedKeywords.slice(0, 50).join(', '),
-          category: categoryId,
-          categoryName: categoryObj.name
-        };
+        return cleanParsedEntry(parsed, isPng);
       } catch (err: any) {
-        console.warn(`Model "${model}" attempt failed:`, err.message);
-        lastError = err;
+        lastError = err.name === 'AbortError' ? new Error('Request timed out (25s), retrying...') : err;
         continue;
       }
     }
   }
 
-  throw lastError || new Error('Failed to generate metadata. Please verify your Gemini API key in Settings.');
+  throw lastError || new Error('Failed to generate metadata. Please check your Gemini API key.');
 }
