@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { X, Key, ExternalLink, CheckCircle, ShieldCheck, Zap, Sliders, RefreshCw, Info } from 'lucide-react';
-import { AppSettings } from '../types';
+import { X, Key, ExternalLink, CheckCircle, ShieldCheck, Zap, Sliders, RefreshCw, Info, Sparkles } from 'lucide-react';
+import { AppSettings, TitleSeoStyle } from '../types';
 import { fetchAvailableModels } from '../services/gemini';
+import { sanitizeStoredModel } from '../services/storage';
 
 interface ApiKeyModalProps {
   isOpen: boolean;
@@ -17,9 +18,10 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
   onSaveSettings
 }) => {
   const [apiKey, setApiKey] = useState(settings.geminiApiKey || '');
-  const [model, setModel] = useState(settings.model || 'gemini-3.5-flash-lite');
-  const [concurrency, setConcurrency] = useState(settings.concurrency || 2);
+  const [model, setModel] = useState(sanitizeStoredModel(settings.model));
+  const [concurrency, setConcurrency] = useState(settings.concurrency || 1);
   const [autoStart, setAutoStart] = useState(settings.autoStartOnUpload ?? true);
+  const [titleStyle, setTitleStyle] = useState<TitleSeoStyle>(settings.titleStyle || 'hybrid_seo');
   
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle');
   const [testMessage, setTestMessage] = useState('');
@@ -27,8 +29,12 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
   const [isDiscovering, setIsDiscovering] = useState(false);
 
   useEffect(() => {
-    if (isOpen && apiKey.trim()) {
-      handleDiscoverModels();
+    if (isOpen) {
+      setModel(sanitizeStoredModel(settings.model));
+      setTitleStyle(settings.titleStyle || 'hybrid_seo');
+      if (apiKey.trim()) {
+        handleDiscoverModels();
+      }
     }
   }, [isOpen]);
 
@@ -38,9 +44,10 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
     onSaveSettings({
       ...settings,
       geminiApiKey: apiKey.trim(),
-      model: model.trim() || 'gemini-3.5-flash-lite',
+      model: sanitizeStoredModel(model),
       concurrency: Number(concurrency),
-      autoStartOnUpload: autoStart
+      autoStartOnUpload: autoStart,
+      titleStyle
     });
     onClose();
   };
@@ -67,7 +74,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
       return;
     }
 
-    const activeModel = model.trim() || 'gemini-3.5-flash-lite';
+    const activeModel = sanitizeStoredModel(model);
     setTestStatus('testing');
     setTestMessage(`Testing API connection with ${activeModel}...`);
 
@@ -85,27 +92,9 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
         const errorData = await response.json().catch(() => null);
         const errMsg = errorData?.error?.message || `HTTP ${response.status}`;
 
-        // If rate limited on this specific model, test fallback gemini-3.5-flash-lite
         if (errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('rate')) {
-          if (activeModel !== 'gemini-3.5-flash-lite') {
-            const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${apiKey.trim()}`;
-            const fbRes = await fetch(fallbackUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ contents: [{ parts: [{ text: 'Respond with OK' }] }] })
-            });
-
-            if (fbRes.ok) {
-              setTestStatus('success');
-              setModel('gemini-3.5-flash-lite');
-              setTestMessage(`API Key is valid! Switched to Gemini 3.5 Flash Lite (High Throughput & Active).`);
-              handleDiscoverModels();
-              return;
-            }
-          }
-          // The key itself is valid, just in a short cooldown window
           setTestStatus('success');
-          setTestMessage(`API Key is Valid! (${errMsg}). Auto-fallback will manage model switching during image batches.`);
+          setTestMessage(`API Key is Valid! (${errMsg}). Auto-cooldown & fallback will automatically handle rate limits.`);
           return;
         }
 
@@ -132,8 +121,8 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
               <Key className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-white">Gemini API & System Settings</h2>
-              <p className="text-xs text-gray-400">Configure your personal Google AI key for unlimited bulk processing</p>
+              <h2 className="text-base font-bold text-white">Gemini API & SEO Strategy Settings</h2>
+              <p className="text-xs text-gray-400">Configure your Google AI key & Title Keyword Strategy</p>
             </div>
           </div>
           <button
@@ -147,33 +136,72 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
         {/* Modal Body */}
         <div className="p-6 space-y-5 overflow-y-auto flex-1">
           
-          {/* Free Quota Breakdown Badge */}
-          <div className="p-3.5 bg-indigo-500/10 border border-indigo-500/30 rounded-xl text-xs text-indigo-200 space-y-1.5">
-            <div className="flex items-center gap-2 font-bold text-indigo-300">
-              <Info className="w-4 h-4" />
-              <span>Google Gemini Free Tier Quota Details</span>
+          {/* Title SEO Strategy Mode Selector */}
+          <div className="space-y-2.5">
+            <label className="text-xs font-semibold text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
+              <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+              Adobe Stock Title SEO Formula (Sales Booster)
+            </label>
+            <div className="grid grid-cols-1 gap-2">
+              <button
+                type="button"
+                onClick={() => setTitleStyle('hybrid_seo')}
+                className={`p-3 rounded-xl border text-left transition-all ${
+                  titleStyle === 'hybrid_seo'
+                    ? 'bg-amber-500/15 border-amber-500/60 text-white ring-1 ring-amber-500/30'
+                    : 'bg-[#0F1017] border-[#25283B] text-gray-400 hover:border-[#353952]'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-bold text-xs text-white">🔥 Hybrid: Description + Search Keyword Clusters</span>
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold">
+                    #1 Best Seller Mode
+                  </span>
+                </div>
+                <p className="text-[11px] text-gray-300 leading-relaxed">
+                  Starts with a clear visual description, then packs 4-6 high-volume comma-separated buyer search phrases (180-200 chars) so your item ranks for 15+ search queries at once!
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setTitleStyle('keyword_power')}
+                className={`p-3 rounded-xl border text-left transition-all ${
+                  titleStyle === 'keyword_power'
+                    ? 'bg-red-500/15 border-red-500/60 text-white ring-1 ring-red-500/30'
+                    : 'bg-[#0F1017] border-[#25283B] text-gray-400 hover:border-[#353952]'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-bold text-xs text-white">⚡ Maximum Keyword Density (Heavy Keyword Stuffing)</span>
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-red-500/20 text-red-300 font-semibold">
+                    Aggressive SEO
+                  </span>
+                </div>
+                <p className="text-[11px] text-gray-400">
+                  Packs 7-9 commercial search keyword phrases and synonyms separated by commas across the entire 180-200 character title.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setTitleStyle('descriptive')}
+                className={`p-2.5 rounded-xl border text-left transition-all ${
+                  titleStyle === 'descriptive'
+                    ? 'bg-indigo-500/15 border-indigo-500/60 text-white'
+                    : 'bg-[#0F1017] border-[#25283B] text-gray-400 hover:border-[#353952]'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-xs text-white">📝 Pure Descriptive Sentence</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-400">Editorial</span>
+                </div>
+              </button>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px] pt-1">
-              <div className="bg-[#0F101A] p-2 rounded-lg border border-indigo-500/20">
-                <span className="text-gray-400 block">Daily Limit:</span>
-                <span className="text-white font-bold font-mono">1,500 Images / Day</span>
-              </div>
-              <div className="bg-[#0F101A] p-2 rounded-lg border border-indigo-500/20">
-                <span className="text-gray-400 block">Weekly Limit:</span>
-                <span className="text-white font-bold font-mono">10,500 Images / Wk</span>
-              </div>
-              <div className="bg-[#0F101A] p-2 rounded-lg border border-indigo-500/20 col-span-2 sm:col-span-1">
-                <span className="text-gray-400 block">Speed Mode:</span>
-                <span className="text-emerald-400 font-bold font-mono">Auto Pacing Active</span>
-              </div>
-            </div>
-            <p className="text-[10px] text-gray-400 pt-0.5">
-              💡 100% Free forever. If you ever need to analyze more than 1,500 images/day, simply create another free project in Google AI Studio!
-            </p>
           </div>
 
           {/* API Key Input */}
-          <div className="space-y-2">
+          <div className="space-y-2 pt-2 border-t border-[#23263B]">
             <div className="flex items-center justify-between">
               <label className="text-xs font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
                 Google Gemini API Key <span className="text-red-400">*</span>
@@ -232,7 +260,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
             <div className="flex items-center justify-between">
               <label className="text-xs font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
                 <Zap className="w-3.5 h-3.5 text-amber-400" />
-                Vision AI Model
+                Active Vision AI Model (Gemini 3.8 / 3.5)
               </label>
               <button
                 type="button"
@@ -241,33 +269,11 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
                 className="text-[11px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1"
               >
                 <RefreshCw className={`w-3 h-3 ${isDiscovering ? 'animate-spin' : ''}`} />
-                <span>Fetch Live Model List</span>
+                <span>Fetch Live Models</span>
               </button>
             </div>
 
-            {/* Model Choices */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              
-              <button
-                type="button"
-                onClick={() => setModel('gemini-3.5-flash-lite')}
-                className={`p-3 rounded-xl border text-left transition-all flex flex-col justify-between ${
-                  model === 'gemini-3.5-flash-lite'
-                    ? 'bg-red-500/15 border-red-500/60 text-white shadow-sm ring-1 ring-red-500/30'
-                    : 'bg-[#0F1017] border-[#25283B] text-gray-400 hover:border-[#353952]'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="font-semibold text-xs text-white">Gemini 3.5 Flash Lite</span>
-                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-semibold font-mono">
-                    High Speed & Stable
-                  </span>
-                </div>
-                <p className="text-[11px] text-gray-400">
-                  Ultra-fast vision model with high rate capacity. Recommended for bulk uploads.
-                </p>
-              </button>
-
               <button
                 type="button"
                 onClick={() => setModel('gemini-3.8-flash')}
@@ -279,22 +285,40 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
               >
                 <div className="flex items-center justify-between mb-1">
                   <span className="font-semibold text-xs text-white">Gemini 3.8 Flash</span>
-                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 font-semibold font-mono">
-                    Deep Reasoning
+                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-semibold font-mono">
+                    Recommended
                   </span>
                 </div>
                 <p className="text-[11px] text-gray-400">
-                  Advanced vision analysis. Auto-fallback active if in temporary minute cooldown.
+                  Latest official Google vision model with highest SEO precision.
                 </p>
               </button>
 
+              <button
+                type="button"
+                onClick={() => setModel('gemini-3.5-flash-lite')}
+                className={`p-3 rounded-xl border text-left transition-all flex flex-col justify-between ${
+                  model === 'gemini-3.5-flash-lite'
+                    ? 'bg-red-500/15 border-red-500/60 text-white shadow-sm ring-1 ring-red-500/30'
+                    : 'bg-[#0F1017] border-[#25283B] text-gray-400 hover:border-[#353952]'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-semibold text-xs text-white">Gemini 3.5 Flash Lite</span>
+                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 font-semibold font-mono">
+                    Fast Backup
+                  </span>
+                </div>
+                <p className="text-[11px] text-gray-400">
+                  High-speed companion pool with automatic rate-limit switching.
+                </p>
+              </button>
             </div>
 
-            {/* Discovered models dropdown if any */}
             {discoveredModels.length > 0 && (
               <div className="pt-2">
                 <label className="text-[11px] text-gray-400 block mb-1">
-                  Or pick any discovered model from your Google account:
+                  Active models verified on your API key ({discoveredModels.length}):
                 </label>
                 <select
                   value={model}
@@ -322,15 +346,15 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
               <div className="flex items-center justify-between">
                 <div>
                   <span className="text-xs font-medium text-white">Parallel Concurrency</span>
-                  <p className="text-[11px] text-gray-400">Number of images processed simultaneously (2 recommended)</p>
+                  <p className="text-[11px] text-gray-400">1 at a time prevents Google 20 RPM burst errors completely</p>
                 </div>
                 <select
                   value={concurrency}
                   onChange={(e) => setConcurrency(Number(e.target.value))}
                   className="bg-[#1B1D2A] border border-[#2E3146] text-white text-xs rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-red-500"
                 >
-                  <option value={1}>1 at a time (Slowest / Safest)</option>
-                  <option value={2}>2 at a time (Recommended & Smooth)</option>
+                  <option value={1}>1 at a time (Zero Rate-Limit Errors)</option>
+                  <option value={2}>2 at a time (Balanced)</option>
                   <option value={3}>3 at a time (Fast)</option>
                 </select>
               </div>

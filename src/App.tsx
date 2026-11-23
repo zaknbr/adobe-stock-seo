@@ -86,8 +86,9 @@ export function App() {
         mimeType,
         currentItem.fileName,
         settings.geminiApiKey,
-        settings.model || 'gemini-3.5-flash-lite',
-        isTransparent
+        settings.model || 'gemini-3.8-flash',
+        isTransparent,
+        settings.titleStyle || 'hybrid_seo'
       );
 
       // Record quota consumption in real time
@@ -138,7 +139,7 @@ export function App() {
     let isMounted = true;
 
     const runQueue = async () => {
-      const concurrencyLimit = settings.concurrency || 2;
+      const concurrencyLimit = settings.concurrency || 1;
 
       while (isProcessingRef.current && isMounted) {
         const currentList = itemsRef.current;
@@ -154,15 +155,15 @@ export function App() {
         const availableSlots = concurrencyLimit - activeProcessing.length;
         if (availableSlots > 0 && pendingItems.length > 0) {
           const nextBatch = pendingItems.slice(0, availableSlots);
-          // Trigger batch with smooth dispatch pacing to respect RPM limits
+          // Trigger batch with smooth dispatch pacing to respect 20 RPM limits
           for (const item of nextBatch) {
             processSingleItem(item.id);
-            await new Promise(r => setTimeout(r, 900));
+            await new Promise(r => setTimeout(r, 2200));
           }
         }
 
         // Delay between loop checks
-        await new Promise(r => setTimeout(r, 800));
+        await new Promise(r => setTimeout(r, 1000));
       }
     };
 

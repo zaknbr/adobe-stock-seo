@@ -6,6 +6,8 @@ export interface AdobeCategory {
 
 export type ProcessingStatus = 'idle' | 'pending' | 'processing' | 'completed' | 'error';
 
+export type TitleSeoStyle = 'hybrid_seo' | 'keyword_power' | 'descriptive';
+
 export interface ImageMetadataItem {
   id: string;
   file: File;
@@ -35,8 +37,9 @@ export interface AppSettings {
   model: string;
   concurrency: number; // How many images to process simultaneously (default: 2)
   autoStartOnUpload: boolean;
-  targetKeywordCount: number; // Default 45-50
+  targetKeywordCount: number; // Default 50
   prefixAiStyle: boolean; // Add generative ai keywords
+  titleStyle: TitleSeoStyle; // Hybrid Description + Search Clusters vs Keyword Power vs Descriptive
 }
 
 export interface CSVExportRow {

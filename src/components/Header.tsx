@@ -76,11 +76,22 @@ export const Header: React.FC<HeaderProps> = ({
             <span className="hidden md:inline">SEO Guide</span>
           </button>
 
-          {/* Model Display Badge */}
-          <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs bg-[#161824] border border-[#25283B] text-gray-400">
+          {/* Model & SEO Strategy Display Badge */}
+          <button
+            onClick={onOpenSettings}
+            className="hidden lg:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs bg-[#161824] hover:bg-[#1E2132] border border-[#25283B] text-gray-400 transition-colors"
+            title="Click to switch SEO Title Mode or Model"
+          >
             <Cpu className="w-3.5 h-3.5 text-indigo-400" />
             <span className="text-gray-300 font-mono text-[11px]">{settings.model}</span>
-          </div>
+            <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 font-semibold">
+              {settings.titleStyle === 'keyword_power'
+                ? '⚡ Keyword Power'
+                : settings.titleStyle === 'descriptive'
+                ? '📝 Descriptive'
+                : '🔥 Hybrid + Keywords'}
+            </span>
+          </button>
 
           {/* API Key Configure Button */}
           <button
