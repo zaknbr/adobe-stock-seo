@@ -52,7 +52,7 @@ function getSystemInstruction(titleStyle: TitleSeoStyle, isMultiBatch: boolean =
    - Total length MUST be between 180 and 200 characters.`;
 
   const outputSchema = isMultiBatch
-    ? `Output ONLY a valid JSON array containing one object per image in the exact order provided:
+    ? `Output ONLY a valid JSON array containing one object per image in the exact order provided (do NOT wrap in markdown code fences):
 [
   {
     "index": 0,
@@ -61,7 +61,7 @@ function getSystemInstruction(titleStyle: TitleSeoStyle, isMultiBatch: boolean =
     "category": 19
   }
 ]`
-    : `Output ONLY valid JSON:
+    : `Output ONLY valid JSON (do NOT wrap in markdown code fences):
 {
   "title": "180 to 200 character SEO title packed with description and high-volume search keywords",
   "keywords": ["keyword 1", "keyword 2", "...", "keyword 50"],
@@ -95,7 +95,13 @@ ${outputSchema}`;
 }
 
 let cachedDiscoveredModels: string[] = [];
+let lastDiscoveredForKey = '';
 let keyRoundRobinCounter = 0;
+
+// Track models that returned 404 so we never waste time calling them again
+const unsupportedModelsCache = new Set<string>();
+// Track which model responded fastest and succeeded most recently
+let lastSuccessfulModel: string = '';
 
 export function getNextApiKey(rawKeyString: string): string {
   const keys = parseApiKeys(rawKeyString);
@@ -110,6 +116,10 @@ export async function fetchAvailableModels(rawKeyString: string): Promise<string
   const apiKey = keys[0];
   if (!apiKey) return [];
 
+  if (cachedDiscoveredModels.length > 0 && lastDiscoveredForKey === apiKey) {
+    return cachedDiscoveredModels;
+  }
+
   try {
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
     if (!res.ok) return [];
@@ -119,17 +129,87 @@ export async function fetchAvailableModels(rawKeyString: string): Promise<string
         .filter((m: GeminiModelInfo) => {
           const id = m.name.replace('models/', '');
           if (id.startsWith('gemini-1.') || id.startsWith('gemini-2.')) return false;
-          if (id.includes('tts') || id.includes('embedding') || id.includes('aqa')) return false;
+          if (
+            id.includes('tts') ||
+            id.includes('embedding') ||
+            id.includes('aqa') ||
+            id.includes('audio') ||
+            id.includes('imagen') ||
+            id.includes('veo') ||
+            id.includes('robotics') ||
+            id.includes('computer-use')
+          ) {
+            return false;
+          }
           return m.supportedGenerationMethods?.includes('generateContent');
         })
         .map((m: GeminiModelInfo) => m.name.replace('models/', ''));
       cachedDiscoveredModels = models;
+      lastDiscoveredForKey = apiKey;
       return models;
     }
   } catch (e) {
     console.error('Failed to list Gemini models:', e);
   }
   return [];
+}
+
+/**
+ * Builds the complete prioritized pool of vision-capable models on the user's account,
+ * including Gemini 3.5 Flash Lite, Gemini 3.8 Flash, and Gemma 4 31B / 26B multimodal models!
+ */
+async function getActiveVisionModelPool(rawApiKeys: string, preferredModel: string): Promise<string[]> {
+  if (cachedDiscoveredModels.length === 0) {
+    await fetchAvailableModels(rawApiKeys);
+  }
+
+  const primary = sanitizeStoredModel(preferredModel);
+
+  // Prioritize fast, low-contention models + user's preferred model + Gemma 4 vision models
+  const basePool = [
+    lastSuccessfulModel,
+    primary,
+    'gemini-3.5-flash-lite',
+    'gemini-3.8-flash',
+    'gemini-3.5-flash',
+    'gemma-4-31b-it',
+    'gemma-4-26b-a4b-it',
+    'gemma-4-27b-it',
+    'gemma-3-27b-it',
+    ...cachedDiscoveredModels
+  ];
+
+  return Array.from(
+    new Set(
+      basePool
+        .filter(Boolean)
+        .map(m => m.replace('models/', '').trim())
+        .filter(m => !unsupportedModelsCache.has(m) && !m.startsWith('gemini-1.') && !m.startsWith('gemini-2.'))
+    )
+  );
+}
+
+/**
+ * Extracts JSON object or array even if model wrapped it in ```json ... ``` markdown fences
+ */
+function parseJsonSafely(rawText: string): any {
+  const cleaned = rawText
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    // Try extracting first { ... } or [ ... ] block
+    const firstBracket = cleaned.search(/[\[{]/);
+    const lastBrace = Math.max(cleaned.lastIndexOf('}'), cleaned.lastIndexOf(']'));
+    if (firstBracket !== -1 && lastBrace > firstBracket) {
+      return JSON.parse(cleaned.substring(firstBracket, lastBrace + 1));
+    }
+    throw new Error('Could not parse JSON from model output');
+  }
 }
 
 function trimTitleSafely(title: string): string {
@@ -212,9 +292,6 @@ function cleanParsedEntry(parsed: any, isPng: boolean): GeminiAnalysisResult {
   };
 }
 
-/**
- * Fetch wrapper with strict 28-second timeout so a hanging network socket NEVER freezes the queue
- */
 async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number = 28000): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -227,16 +304,43 @@ async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: nu
 }
 
 /**
- * Multi-Image Turbo Batch Analyzer:
- * Analyzes 1 to 4 images in a SINGLE Gemini API call!
- * - Cuts 100 images down to just 25-33 API calls!
- * - Rotates across multiple API keys if provided.
- * - Alternates across active models (gemini-3.8-flash & gemini-3.5-flash-lite) to double RPM capacity.
+ * Builds request payload compatible with both Gemini 3.x and Gemma 4 models
+ * (Gemma models don't always support systemInstruction or responseMimeType, so we inline smoothly when needed)
  */
+function buildModelRequestBody(model: string, parts: any[], systemText: string): any {
+  const isGemma = model.toLowerCase().includes('gemma');
+
+  if (isGemma) {
+    return {
+      contents: [
+        {
+          parts: [{ text: `${systemText}\n\n---\n\n` }, ...parts]
+        }
+      ],
+      generationConfig: {
+        temperature: 0.25,
+        topP: 0.95
+      }
+    };
+  }
+
+  return {
+    contents: [{ parts }],
+    systemInstruction: {
+      parts: [{ text: systemText }]
+    },
+    generationConfig: {
+      temperature: 0.25,
+      topP: 0.95,
+      responseMimeType: 'application/json'
+    }
+  };
+}
+
 export async function analyzeBatchForAdobeStock(
   batch: BatchImageInput[],
   rawApiKeys: string,
-  preferredModel: string = 'gemini-3.8-flash',
+  preferredModel: string = 'gemini-3.5-flash-lite',
   titleStyle: TitleSeoStyle = 'hybrid_seo'
 ): Promise<Map<string, GeminiAnalysisResult>> {
   const keys = parseApiKeys(rawApiKeys);
@@ -260,7 +364,6 @@ export async function analyzeBatchForAdobeStock(
     return map;
   }
 
-  // Build multi-image request parts
   const parts: any[] = [
     {
       text: `Analyze the following ${batch.length} stock images independently and return a JSON array with ${batch.length} objects in the exact same order (index 0 to ${batch.length - 1}). Each object MUST have an SEO-packed 180-200 character title (description + high-volume buyer search keywords), 50 relevance-ordered keywords, and category ID (1-21).`
@@ -288,99 +391,96 @@ export async function analyzeBatchForAdobeStock(
     });
   });
 
-  const requestBody = {
-    contents: [{ parts }],
-    systemInstruction: {
-      parts: [{ text: getSystemInstruction(titleStyle, true) }]
-    },
-    generationConfig: {
-      temperature: 0.25,
-      topP: 0.95,
-      responseMimeType: 'application/json'
-    }
-  };
+  const systemText = getSystemInstruction(titleStyle, true);
+  const candidateModels = await getActiveVisionModelPool(rawApiKeys, preferredModel);
 
-  const activeModel = sanitizeStoredModel(preferredModel);
-  const candidateModels = Array.from(
-    new Set([activeModel, 'gemini-3.8-flash', 'gemini-3.5-flash-lite', ...cachedDiscoveredModels.map(sanitizeStoredModel)])
-  );
+  // Try up to 2 rounds across our entire model pool (Gemini 3.5 Flash Lite -> Gemini 3.8 Flash -> Gemma 4 31B -> Gemma 4 26B)
+  for (let round = 0; round < 2; round++) {
+    for (const model of candidateModels) {
+      const currentKey = getNextApiKey(rawApiKeys);
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${currentKey}`;
+        const requestBody = buildModelRequestBody(model, parts, systemText);
 
-  let lastError: any = null;
+        const response = await fetchWithTimeout(
+          url,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody)
+          },
+          32000
+        );
 
-  for (const model of candidateModels) {
-    const currentKey = getNextApiKey(rawApiKeys);
-    try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${currentKey}`;
-      const response = await fetchWithTimeout(
-        url,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(requestBody)
-        },
-        32000
-      );
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => null);
+          const errorMsg = errorData?.error?.message || `HTTP ${response.status}`;
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => null);
-        const errorMsg = errorData?.error?.message || `HTTP ${response.status}`;
-        lastError = new Error(errorMsg);
-        continue;
-      }
+          if (
+            response.status === 404 ||
+            errorMsg.toLowerCase().includes('not found') ||
+            errorMsg.toLowerCase().includes('no longer available') ||
+            errorMsg.toLowerCase().includes('not supported')
+          ) {
+            unsupportedModelsCache.add(model);
+            continue;
+          }
 
-      const data = await response.json();
-      const textOutput = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!textOutput) {
-        throw new Error(`Empty batch response from ${model}`);
-      }
-
-      const parsedArray = JSON.parse(textOutput);
-      const list = Array.isArray(parsedArray)
-        ? parsedArray
-        : Array.isArray(parsedArray?.items)
-        ? parsedArray.items
-        : Array.isArray(parsedArray?.results)
-        ? parsedArray.results
-        : null;
-
-      if (!list || list.length === 0) {
-        throw new Error('Batch output was not a list');
-      }
-
-      const resultMap = new Map<string, GeminiAnalysisResult>();
-      batch.forEach((item, idx) => {
-        const entry = list.find((e: any) => Number(e?.index) === idx) || list[idx];
-        if (entry && entry.title) {
-          const isPng = item.isTransparent || item.fileName.toLowerCase().endsWith('.png');
-          resultMap.set(item.id, cleanParsedEntry(entry, isPng));
+          // On high demand (503) or rate limit (429), immediately hop to the next model in the pool!
+          continue;
         }
-      });
 
-      if (resultMap.size === batch.length) {
-        return resultMap;
+        const data = await response.json();
+        const textOutput = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!textOutput) continue;
+
+        const parsedArray = parseJsonSafely(textOutput);
+        const list = Array.isArray(parsedArray)
+          ? parsedArray
+          : Array.isArray(parsedArray?.items)
+          ? parsedArray.items
+          : Array.isArray(parsedArray?.results)
+          ? parsedArray.results
+          : null;
+
+        if (!list || list.length === 0) continue;
+
+        const resultMap = new Map<string, GeminiAnalysisResult>();
+        batch.forEach((item, idx) => {
+          const entry = list.find((e: any) => Number(e?.index) === idx) || list[idx];
+          if (entry && entry.title) {
+            const isPng = item.isTransparent || item.fileName.toLowerCase().endsWith('.png');
+            resultMap.set(item.id, cleanParsedEntry(entry, isPng));
+          }
+        });
+
+        if (resultMap.size === batch.length) {
+          lastSuccessfulModel = model;
+          return resultMap;
+        }
+      } catch (err: any) {
+        console.warn(`Batch model ${model} attempt failed:`, err.message);
       }
-    } catch (err: any) {
-      console.warn(`Batch model ${model} failed, falling back:`, err.message);
-      lastError = err;
     }
+
+    // Brief pause before round 2 if all models had a simultaneous demand spike
+    await new Promise(r => setTimeout(r, 1800));
   }
 
-  // Fallback: process items individually in parallel if batch JSON structure was partial
+  // Final fallback: process items individually across the full model pool with exponential retry
   const fallbackMap = new Map<string, GeminiAnalysisResult>();
-  await Promise.all(
-    batch.map(async item => {
-      const res = await analyzeImageForAdobeStock(
-        item.base64Data,
-        item.mimeType,
-        item.fileName,
-        rawApiKeys,
-        preferredModel,
-        item.isTransparent,
-        titleStyle
-      );
-      fallbackMap.set(item.id, res);
-    })
-  );
+  for (const item of batch) {
+    const res = await analyzeImageForAdobeStock(
+      item.base64Data,
+      item.mimeType,
+      item.fileName,
+      rawApiKeys,
+      preferredModel,
+      item.isTransparent,
+      titleStyle
+    );
+    fallbackMap.set(item.id, res);
+  }
   return fallbackMap;
 }
 
@@ -389,7 +489,7 @@ export async function analyzeImageForAdobeStock(
   mimeType: string,
   fileName: string,
   rawApiKeys: string,
-  preferredModel: string = 'gemini-3.8-flash',
+  preferredModel: string = 'gemini-3.5-flash-lite',
   isTransparent: boolean = false,
   titleStyle: TitleSeoStyle = 'hybrid_seo'
 ): Promise<GeminiAnalysisResult> {
@@ -408,46 +508,28 @@ export async function analyzeImageForAdobeStock(
     ? `Visually inspect this transparent PNG image ("${fileName}"). It has an isolated transparent background (NO solid or black background). Generate an Adobe Stock Title (180-200 chars) combining a clear description ("... isolated on transparent background") followed by comma-separated high-volume search keyword clusters that buyers search for. Also generate 50 relevance-ordered keywords (top 10 most critical first) and category ID.`
     : `Visually inspect this image ("${fileName}"). Generate a high-converting Adobe Stock Title (180-200 chars) combining a clear visual description followed by comma-separated high-volume buyer search keyword clusters and synonyms to maximize search visibility. Also generate 50 relevance-ordered keywords (top 10 most critical first) and category ID.`;
 
-  const requestBody = {
-    contents: [
-      {
-        parts: [
-          { text: userPrompt },
-          {
-            inline_data: {
-              mime_type: mimeType || 'image/jpeg',
-              data: cleanBase64
-            }
-          }
-        ]
+  const parts = [
+    { text: userPrompt },
+    {
+      inline_data: {
+        mime_type: mimeType || 'image/jpeg',
+        data: cleanBase64
       }
-    ],
-    systemInstruction: {
-      parts: [{ text: getSystemInstruction(titleStyle, false) }]
-    },
-    generationConfig: {
-      temperature: 0.25,
-      topP: 0.95,
-      responseMimeType: 'application/json'
     }
-  };
-
-  const activeModel = sanitizeStoredModel(preferredModel);
-  const candidateModels: string[] = [
-    activeModel,
-    'gemini-3.8-flash',
-    'gemini-3.5-flash-lite',
-    ...cachedDiscoveredModels.map(sanitizeStoredModel)
   ];
 
-  const uniqueModels = Array.from(new Set(candidateModels.filter(Boolean)));
+  const systemText = getSystemInstruction(titleStyle, false);
+  const candidateModels = await getActiveVisionModelPool(rawApiKeys, preferredModel);
   let lastError: any = null;
 
-  for (let round = 0; round < 2; round++) {
-    for (const model of uniqueModels) {
+  // Up to 4 full cycles across all available models so temporary high-demand spikes NEVER fail an image!
+  for (let round = 0; round < 4; round++) {
+    for (const model of candidateModels) {
       const currentKey = getNextApiKey(rawApiKeys);
       try {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${currentKey}`;
+        const requestBody = buildModelRequestBody(model, parts, systemText);
+
         const response = await fetchWithTimeout(
           url,
           {
@@ -455,7 +537,7 @@ export async function analyzeImageForAdobeStock(
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(requestBody)
           },
-          25000
+          26000
         );
 
         if (!response.ok) {
@@ -465,23 +547,15 @@ export async function analyzeImageForAdobeStock(
           if (
             response.status === 404 ||
             errorMsg.toLowerCase().includes('not found') ||
-            errorMsg.toLowerCase().includes('no longer available')
+            errorMsg.toLowerCase().includes('no longer available') ||
+            errorMsg.toLowerCase().includes('not supported')
           ) {
-            continue;
-          }
-
-          if (response.status === 429 || response.status === 503 || errorMsg.toLowerCase().includes('quota')) {
-            lastError = new Error(errorMsg);
-            // If we have other keys or models, try them immediately without waiting!
-            if (keys.length > 1 || uniqueModels.indexOf(model) < uniqueModels.length - 1) {
-              continue;
-            }
-            // Brief 2.5s pause before next round
-            await new Promise(r => setTimeout(r, 2500));
+            unsupportedModelsCache.add(model);
             continue;
           }
 
           lastError = new Error(errorMsg);
+          // Immediately try next model in pool (e.g., gemini-3.5-flash-lite -> gemini-3.8-flash -> gemma-4-31b-it -> gemma-4-26b-a4b-it)
           continue;
         }
 
@@ -491,14 +565,18 @@ export async function analyzeImageForAdobeStock(
           throw new Error(`Empty response from model ${model}.`);
         }
 
-        const parsed = JSON.parse(textOutput);
+        const parsed = parseJsonSafely(textOutput);
+        lastSuccessfulModel = model;
         return cleanParsedEntry(parsed, isPng);
       } catch (err: any) {
-        lastError = err.name === 'AbortError' ? new Error('Request timed out (25s), retrying...') : err;
+        lastError = err.name === 'AbortError' ? new Error('Request timed out, retrying...') : err;
         continue;
       }
     }
+
+    // Exponential backoff between full pool sweeps (2s, 4s, 6s)
+    await new Promise(r => setTimeout(r, (round + 1) * 2000));
   }
 
-  throw lastError || new Error('Failed to generate metadata. Please check your Gemini API key.');
+  throw lastError || new Error('All Google AI models are currently busy. Please click Retry.');
 }

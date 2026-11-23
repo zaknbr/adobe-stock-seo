@@ -14,7 +14,7 @@ const RETIRED_MODELS = new Set([
 
 export const DEFAULT_SETTINGS: AppSettings = {
   geminiApiKey: '',
-  model: 'gemini-3.8-flash',
+  model: 'gemini-3.5-flash-lite',
   concurrency: 2,
   batchSize: 3, // Pack 3 images per API call = 3x speed & 3x fewer API requests!
   autoStartOnUpload: true,
@@ -24,10 +24,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
 };
 
 export function sanitizeStoredModel(modelName?: string): string {
-  if (!modelName) return 'gemini-3.8-flash';
+  if (!modelName) return 'gemini-3.5-flash-lite';
   const clean = modelName.replace('models/', '').trim();
   if (!clean || RETIRED_MODELS.has(clean) || clean.startsWith('gemini-1.') || clean.startsWith('gemini-2.')) {
-    return 'gemini-3.8-flash';
+    return 'gemini-3.5-flash-lite';
   }
   return clean;
 }
