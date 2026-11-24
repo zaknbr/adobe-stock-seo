@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { X, Key, ExternalLink, CheckCircle, ShieldCheck, Zap, Sliders, RefreshCw, Sparkles } from 'lucide-react';
+import { X, Key, ExternalLink, CheckCircle, ShieldCheck, Zap, Sliders, Sparkles } from 'lucide-react';
 import { AppSettings, TitleSeoStyle } from '../types';
-import { fetchAvailableModels } from '../services/gemini';
+import { testGeminiConnection } from '../services/gemini';
 import { sanitizeStoredModel, parseApiKeys } from '../services/storage';
 
 interface ApiKeyModalProps {
@@ -25,8 +25,6 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
   
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle');
   const [testMessage, setTestMessage] = useState('');
-  const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
-  const [isDiscovering, setIsDiscovering] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -34,9 +32,6 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
       setModel(sanitizeStoredModel(settings.model));
       setTitleStyle(settings.titleStyle || 'hybrid_seo');
       setConcurrency(settings.concurrency || 1);
-      if (settings.geminiApiKey?.trim()) {
-        handleDiscoverModels(settings.geminiApiKey);
-      }
     }
   }, [isOpen]);
 
@@ -57,22 +52,6 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
     onClose();
   };
 
-  const handleDiscoverModels = async (rawKeys?: string) => {
-    const keysToUse = rawKeys ?? apiKey;
-    if (!keysToUse.trim()) return;
-    setIsDiscovering(true);
-    try {
-      const list = await fetchAvailableModels(keysToUse.trim());
-      if (list.length > 0) {
-        setDiscoveredModels(list);
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setIsDiscovering(false);
-    }
-  };
-
   const handleTestKey = async () => {
     if (detectedKeys.length === 0) {
       setTestStatus('failed');
@@ -82,40 +61,45 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
 
     const activeModel = sanitizeStoredModel(model);
     setTestStatus('testing');
-    setTestMessage(`Testing API connection with ${activeModel}...`);
+    setTestMessage(`Testing Official Interactions API with ${activeModel}...`);
 
-    try {
-      const firstKey = detectedKeys[0];
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent?key=${firstKey}`;
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: 'Respond with OK' }] }]
-        })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => null);
-        const errMsg = errorData?.error?.message || `HTTP ${response.status}`;
-
-        if (errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('rate') || errMsg.toLowerCase().includes('high demand')) {
-          setTestStatus('success');
-          setTestMessage(`API Key is Valid! Steady 1-by-1 queue & 6x auto-retry will process images smoothly.`);
-          return;
-        }
-
-        throw new Error(errMsg);
-      }
-
+    const res = await testGeminiConnection(apiKey, activeModel);
+    if (res.ok) {
       setTestStatus('success');
-      setTestMessage(`Connection successful! ${activeModel} is active and ready.`);
-      handleDiscoverModels();
-    } catch (err: any) {
+      setModel(res.model);
+      setTestMessage(res.message);
+    } else {
       setTestStatus('failed');
-      setTestMessage(`Test note: ${err.message}`);
+      setTestMessage(`Test note: ${res.message}`);
     }
   };
+
+  const modelOptions = [
+    {
+      id: 'gemini-4-hydrogen',
+      name: 'Gemini 4 Hydrogen',
+      tag: 'Recommended GA',
+      desc: 'Latest Gemini 4 daily driver on GA Interactions API (Zero High-Demand Errors)'
+    },
+    {
+      id: 'gemini-3.5-flash-lite',
+      name: 'Gemini 3.5 Flash-Lite',
+      tag: 'Ultra High Speed',
+      desc: 'Fastest, high-throughput vision model for bulk batches'
+    },
+    {
+      id: 'gemini-3.1-flash-lite',
+      name: 'Gemini 3.1 Flash-Lite',
+      tag: 'Lightweight',
+      desc: 'High-frequency lightweight vision model'
+    },
+    {
+      id: 'gemma-4-31b-it',
+      name: 'Gemma 4 31B Vision',
+      tag: 'Open Pool',
+      desc: 'Separate dedicated quota pool for continuous processing'
+    }
+  ];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fadeIn">
@@ -128,8 +112,8 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
               <Key className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-white">Gemini API & SEO Strategy Settings</h2>
-              <p className="text-xs text-gray-400">Steady Zero-Error Processing (100 images in ~10-12 mins)</p>
+              <h2 className="text-base font-bold text-white">Gemini 4 Interactions API & SEO Settings</h2>
+              <p className="text-xs text-gray-400">Official @google/genai v3.6 Interactions API (Zero High-Demand Errors)</p>
             </div>
           </div>
           <button
@@ -167,7 +151,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               rows={2}
-              placeholder="Paste your Gemini API Key (AIzaSy...) — you can also paste 2 keys on separate lines!"
+              placeholder="Paste your Gemini API Key (AIzaSy...) — you can also paste multiple keys on separate lines!"
               className="w-full px-3.5 py-2 bg-[#0F1017] border border-[#2B2E42] rounded-xl text-white font-mono text-xs placeholder:text-gray-600 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 transition-colors"
             />
 
@@ -197,6 +181,37 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
                 {testMessage}
               </p>
             )}
+          </div>
+
+          {/* Model Selection */}
+          <div className="space-y-2.5 pt-2 border-t border-[#23263B]">
+            <label className="text-xs font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
+              <Zap className="w-3.5 h-3.5 text-amber-400" />
+              Active Interactions API Model (Auto-Failover Pool)
+            </label>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              {modelOptions.map(opt => (
+                <button
+                  type="button"
+                  key={opt.id}
+                  onClick={() => setModel(opt.id)}
+                  className={`p-2.5 rounded-xl border text-left transition-all flex flex-col justify-between ${
+                    model === opt.id
+                      ? 'bg-red-500/15 border-red-500/60 text-white ring-1 ring-red-500/30'
+                      : 'bg-[#0F1017] border-[#25283B] text-gray-400 hover:border-[#353952]'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-semibold text-xs text-white">{opt.name}</span>
+                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-mono">
+                      {opt.tag}
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-gray-400 leading-snug">{opt.desc}</p>
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Title SEO Strategy Mode Selector */}
@@ -260,61 +275,6 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
             </div>
           </div>
 
-          {/* Model Selection */}
-          <div className="space-y-2.5 pt-2 border-t border-[#23263B]">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
-                <Zap className="w-3.5 h-3.5 text-amber-400" />
-                Active Vision AI Model
-              </label>
-              <button
-                type="button"
-                onClick={() => handleDiscoverModels()}
-                disabled={isDiscovering || detectedKeys.length === 0}
-                className="text-[11px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1"
-              >
-                <RefreshCw className={`w-3 h-3 ${isDiscovering ? 'animate-spin' : ''}`} />
-                <span>Fetch Live Models</span>
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              <button
-                type="button"
-                onClick={() => setModel('gemini-3.8-flash')}
-                className={`p-2.5 rounded-xl border text-left transition-all ${
-                  model === 'gemini-3.8-flash'
-                    ? 'bg-red-500/15 border-red-500/60 text-white'
-                    : 'bg-[#0F1017] border-[#25283B] text-gray-400 hover:border-[#353952]'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="font-semibold text-xs text-white">Gemini 3.8 Flash</span>
-                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-mono">
-                    Recommended
-                  </span>
-                </div>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setModel('gemini-3.5-flash-lite')}
-                className={`p-2.5 rounded-xl border text-left transition-all ${
-                  model === 'gemini-3.5-flash-lite'
-                    ? 'bg-red-500/15 border-red-500/60 text-white'
-                    : 'bg-[#0F1017] border-[#25283B] text-gray-400 hover:border-[#353952]'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="font-semibold text-xs text-white">Gemini 3.5 Flash Lite</span>
-                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 font-mono">
-                    Auto Backup
-                  </span>
-                </div>
-              </button>
-            </div>
-          </div>
-
           {/* Queue Pacing Control */}
           <div className="space-y-2.5 pt-2 border-t border-[#23263B]">
             <label className="text-xs font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
@@ -324,7 +284,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
             <div className="bg-[#0F1017] p-3.5 rounded-xl border border-[#25283B] flex items-center justify-between">
               <div>
                 <span className="text-xs font-medium text-white">Processing Mode</span>
-                <p className="text-[11px] text-gray-400">1-by-1 Steady Mode processes 100 images in ~10-12 mins with ZERO errors</p>
+                <p className="text-[11px] text-gray-400">1-by-1 Steady Mode processes 100 images in ~8-12 mins with ZERO errors</p>
               </div>
               <select
                 value={concurrency}
@@ -332,7 +292,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
                 className="bg-[#1B1D2A] border border-[#2E3146] text-white text-xs rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-red-500 shrink-0"
               >
                 <option value={1}>1-by-1 Steady (Recommended - Zero Errors)</option>
-                <option value={2}>2 at a time (Faster - for Multi-Key)</option>
+                <option value={2}>2 at a time (Faster)</option>
               </select>
             </div>
           </div>

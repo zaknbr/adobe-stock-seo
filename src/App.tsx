@@ -87,7 +87,7 @@ export function App() {
         mimeType,
         currentItem.fileName,
         currentSettings.geminiApiKey,
-        currentSettings.model || 'gemini-3.8-flash',
+        currentSettings.model || 'gemini-4-hydrogen',
         isTransparent,
         currentSettings.titleStyle || 'hybrid_seo',
         (statusMsg: string) => {

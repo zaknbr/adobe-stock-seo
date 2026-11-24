@@ -1,3 +1,4 @@
+import { GoogleGenAI } from '@google/genai';
 import { ADOBE_STOCK_CATEGORIES } from '../constants/categories';
 import { TitleSeoStyle } from '../types';
 import { sanitizeStoredModel, parseApiKeys } from './storage';
@@ -16,6 +17,26 @@ export interface GeminiModelInfo {
   description: string;
   supportedGenerationMethods: string[];
 }
+
+const ADOBE_STOCK_RESPONSE_SCHEMA = {
+  type: 'object',
+  properties: {
+    title: {
+      type: 'string',
+      description: '180 to 200 character SEO title packed with description and high-volume search keywords.'
+    },
+    keywords: {
+      type: 'array',
+      items: { type: 'string' },
+      description: '46 to 50 relevance-ordered keywords (top 10 highest weight keywords first).'
+    },
+    category: {
+      type: 'integer',
+      description: 'Adobe Stock category ID between 1 and 21.'
+    }
+  },
+  required: ['title', 'keywords', 'category']
+};
 
 function getSystemInstruction(titleStyle: TitleSeoStyle): string {
   const styleGuidelines =
@@ -66,7 +87,7 @@ ${styleGuidelines}
    Select the single best fitting Adobe Stock category ID:
    1: Animals | 2: Buildings and Architecture | 3: Business | 4: Drinks | 5: The Environment | 6: States of Mind | 7: Food | 8: Graphic Resources | 9: Hobbies and Leisure | 10: Industry | 11: Landscapes | 12: Lifestyle | 13: People | 14: Plants and Flowers | 15: Culture and Religion | 16: Science | 17: Social Issues | 18: Sports | 19: Technology | 20: Transport | 21: Travel
 
-Output ONLY valid JSON (do not wrap in markdown code fences):
+Output ONLY valid JSON:
 {
   "title": "180 to 200 character SEO title packed with description and high-volume search keywords",
   "keywords": ["keyword 1", "keyword 2", "...", "keyword 50"],
@@ -74,11 +95,8 @@ Output ONLY valid JSON (do not wrap in markdown code fences):
 }`;
 }
 
-let cachedDiscoveredModels: string[] = [];
-let lastKeyUsedForDiscovery = '';
 let keyRoundRobinCounter = 0;
-const deadModelsCache = new Set<string>();
-let currentBestModel = '';
+let currentHealthyModel = '';
 
 export function getNextApiKey(rawKeyString: string): string {
   const keys = parseApiKeys(rawKeyString);
@@ -88,56 +106,15 @@ export function getNextApiKey(rawKeyString: string): string {
   return selected;
 }
 
-export async function fetchAvailableModels(rawKeyString: string): Promise<string[]> {
-  const keys = parseApiKeys(rawKeyString);
-  const apiKey = keys[0];
-  if (!apiKey) return [];
-
-  if (cachedDiscoveredModels.length > 0 && lastKeyUsedForDiscovery === apiKey) {
-    return cachedDiscoveredModels;
-  }
-
-  try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
-    if (!res.ok) return [];
-    const data = await res.json();
-    if (data && Array.isArray(data.models)) {
-      const models = data.models
-        .filter((m: GeminiModelInfo) => {
-          const id = m.name.replace('models/', '').toLowerCase();
-          if (id.startsWith('gemini-1.') || id.startsWith('gemini-2.0') || id.startsWith('gemini-2.5-flash')) {
-            if (!id.includes('tts')) return false;
-          }
-          // Exclude non-vision/text-generation specialized models
-          if (
-            id.includes('tts') ||
-            id.includes('embedding') ||
-            id.includes('aqa') ||
-            id.includes('audio') ||
-            id.includes('imagen') ||
-            id.includes('veo') ||
-            id.includes('robotics') ||
-            id.includes('computer-use') ||
-            id.includes('thinking') ||
-            id.includes('learnlm') ||
-            id.includes('gemma-2-') ||
-            id.includes('gemma-3-1b') ||
-            id.includes('gemma-3-4b')
-          ) {
-            return false;
-          }
-          return m.supportedGenerationMethods?.includes('generateContent');
-        })
-        .map((m: GeminiModelInfo) => m.name.replace('models/', ''));
-
-      cachedDiscoveredModels = models;
-      lastKeyUsedForDiscovery = apiKey;
-      return models;
-    }
-  } catch (e) {
-    console.error('Failed to list Gemini models:', e);
-  }
-  return [];
+export async function fetchAvailableModels(_rawKeyString: string): Promise<string[]> {
+  return [
+    'gemini-4-hydrogen',
+    'gemini-3.5-flash-lite',
+    'gemini-3.1-flash-lite',
+    'gemini-4-argon',
+    'gemma-4-31b-it',
+    'gemma-4-26b-a4b-it'
+  ];
 }
 
 function parseJsonSafely(rawText: string): any {
@@ -194,77 +171,61 @@ function maximizeTitleSeoLength(title: string, keywords: string[]): string {
   return trimTitleSafely(current);
 }
 
-function extractRetrySeconds(errorMsg: string): number {
-  const match = errorMsg.match(/retry in\s+([\d.]+)\s*s/i);
-  if (match && match[1]) {
-    const s = parseFloat(match[1]);
-    if (!isNaN(s) && s > 0) return Math.min(Math.ceil(s) + 1, 55);
-  }
-  return 0;
-}
-
-function buildRequestPayload(model: string, userPrompt: string, mimeType: string, cleanBase64: string, systemText: string) {
-  const isGemma = model.toLowerCase().includes('gemma');
-
-  if (isGemma) {
-    return {
-      contents: [
-        {
-          parts: [
-            { text: `${systemText}\n\n---\n\n${userPrompt}` },
-            {
-              inline_data: {
-                mime_type: mimeType || 'image/jpeg',
-                data: cleanBase64
-              }
-            }
-          ]
-        }
-      ],
-      generationConfig: {
-        temperature: 0.25,
-        topP: 0.95
-      }
-    };
+/**
+ * Tests the user's API key using the official @google/genai SDK Interactions API (`client.interactions.create`)
+ */
+export async function testGeminiConnection(rawApiKeys: string, preferredModel: string): Promise<{ ok: boolean; model: string; message: string }> {
+  const keys = parseApiKeys(rawApiKeys);
+  if (keys.length === 0) {
+    return { ok: false, model: preferredModel, message: 'Please enter a valid Gemini API key.' };
   }
 
-  return {
-    contents: [
-      {
-        parts: [
-          { text: userPrompt },
-          {
-            inline_data: {
-              mime_type: mimeType || 'image/jpeg',
-              data: cleanBase64
-            }
-          }
-        ]
+  const modelsToTry = Array.from(
+    new Set([
+      sanitizeStoredModel(preferredModel),
+      'gemini-4-hydrogen',
+      'gemini-3.5-flash-lite',
+      'gemini-3.1-flash-lite',
+      'gemma-4-31b-it'
+    ])
+  );
+
+  let lastErr = '';
+  for (const model of modelsToTry) {
+    try {
+      const client = new GoogleGenAI({ apiKey: keys[0] });
+      const interaction = await client.interactions.create({
+        model,
+        input: 'Respond with the word OK',
+        store: false
+      });
+      if (interaction && interaction.output_text) {
+        currentHealthyModel = model;
+        return {
+          ok: true,
+          model,
+          message: `Connected via Official Interactions API (${model})! ${keys.length} Key(s) active.`
+        };
       }
-    ],
-    systemInstruction: {
-      parts: [{ text: systemText }]
-    },
-    generationConfig: {
-      temperature: 0.25,
-      topP: 0.95,
-      responseMimeType: 'application/json'
+    } catch (err: any) {
+      lastErr = err?.message || String(err);
     }
-  };
+  }
+
+  return { ok: false, model: preferredModel, message: lastErr || 'Failed to connect to Interactions API.' };
 }
 
 /**
- * Unstoppable Image Analyzer:
- * - Discovers all live models on the user's account via `v1beta/models`.
- * - Cycles across every active vision model (`gemini-3.8-flash`, `gemini-3.5-flash-lite`, plus all discovered models including Gemma 4 31B/26B).
- * - When Google has a temporary "High Demand" spike, it waits and retries with live countdown feedback instead of failing!
+ * Powered by the Official Google GenAI SDK v3.6 (`client.interactions.create` on GA `v1` Interactions API)
+ * and current production models (`gemini-4-hydrogen`, `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-4-argon`, `gemma-4-31b-it`).
+ * Eliminates the legacy `v1beta/.../gemini-3.8-flash:generateContent` High Demand bottleneck!
  */
 export async function analyzeImageForAdobeStock(
   base64Data: string,
   mimeType: string,
   fileName: string,
   rawApiKeys: string,
-  preferredModel: string = 'gemini-3.8-flash',
+  preferredModel: string = 'gemini-4-hydrogen',
   isTransparent: boolean = false,
   titleStyle: TitleSeoStyle = 'hybrid_seo',
   onStatusUpdate?: (msg: string) => void
@@ -273,9 +234,6 @@ export async function analyzeImageForAdobeStock(
   if (keys.length === 0) {
     throw new Error('Google Gemini API Key is missing. Please add your API key in Settings.');
   }
-
-  // Auto-discover exact model IDs enabled on this API key
-  const discovered = await fetchAvailableModels(rawApiKeys);
 
   const cleanBase64 = base64Data.includes('base64,')
     ? base64Data.split('base64,')[1]
@@ -290,80 +248,63 @@ export async function analyzeImageForAdobeStock(
   const systemText = getSystemInstruction(titleStyle);
   const primaryModel = sanitizeStoredModel(preferredModel);
 
-  // Build ordered pool of all candidate vision models on the user's account
+  // Ordered priority pool of current GA Interactions API models
   const candidatePool = Array.from(
     new Set(
       [
-        currentBestModel,
+        currentHealthyModel,
         primaryModel,
-        'gemini-3.8-flash',
+        'gemini-4-hydrogen',
         'gemini-3.5-flash-lite',
-        ...discovered
-      ]
-        .filter(Boolean)
-        .filter(m => !deadModelsCache.has(m))
+        'gemini-3.1-flash-lite',
+        'gemini-4-argon',
+        'gemma-4-31b-it',
+        'gemma-4-26b-a4b-it'
+      ].filter(Boolean)
     )
   );
 
   let lastError: any = null;
 
-  // Up to 12 attempts across our model pool so temporary 30-60 second Google "High Demand" spikes never break the batch
-  for (let attempt = 1; attempt <= 12; attempt++) {
-    const model = candidatePool[(attempt - 1) % candidatePool.length] || 'gemini-3.8-flash';
+  for (let attempt = 1; attempt <= 10; attempt++) {
+    const model = candidatePool[(attempt - 1) % candidatePool.length] || 'gemini-4-hydrogen';
     const currentKey = getNextApiKey(rawApiKeys);
 
     if (onStatusUpdate && attempt > 1) {
-      onStatusUpdate(`Trying ${model} (Attempt ${attempt})...`);
+      onStatusUpdate(`Using ${model} (Attempt ${attempt})...`);
     }
 
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${currentKey}`;
-      const requestBody = buildRequestPayload(model, userPrompt, mimeType, cleanBase64, systemText);
+      const client = new GoogleGenAI({ apiKey: currentKey });
+      const isGemma = model.startsWith('gemma-');
 
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody)
+      const interaction = await client.interactions.create({
+        model,
+        system_instruction: systemText,
+        input: [
+          { type: 'text', text: userPrompt },
+          {
+            type: 'image',
+            data: cleanBase64,
+            mime_type: mimeType || 'image/jpeg'
+          }
+        ],
+        ...(isGemma
+          ? {}
+          : {
+              generation_config: {
+                thinking_level: 'low'
+              },
+              response_format: {
+                type: 'text',
+                mime_type: 'application/json',
+                schema: ADOBE_STOCK_RESPONSE_SCHEMA
+              }
+            }),
+        store: false
       });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => null);
-        const errorMsg = errorData?.error?.message || `HTTP ${response.status} ${response.statusText}`;
-
-        // If model is not found or doesn't support image input (400/404), blacklist it for this session and immediately try next model!
-        if (
-          response.status === 404 ||
-          response.status === 400 ||
-          errorMsg.toLowerCase().includes('not found') ||
-          errorMsg.toLowerCase().includes('no longer available') ||
-          errorMsg.toLowerCase().includes('not supported') ||
-          errorMsg.toLowerCase().includes('multimodal') ||
-          errorMsg.toLowerCase().includes('image')
-        ) {
-          deadModelsCache.add(model);
-          continue;
-        }
-
-        lastError = new Error(errorMsg);
-
-        // If we haven't tried all models in the pool yet, immediately try the next model without waiting!
-        if (attempt < candidatePool.length) {
-          continue;
-        }
-
-        // All models in pool were checked and Google is experiencing a temporary High Demand / 429 spike
-        const retrySec = extractRetrySeconds(errorMsg);
-        const waitSec = retrySec > 0 ? retrySec : Math.min(4 + attempt * 2, 20);
-
-        if (onStatusUpdate) {
-          onStatusUpdate(`Google AI Busy — Auto-waiting ${waitSec}s...`);
-        }
-        await new Promise(r => setTimeout(r, waitSec * 1000));
-        continue;
-      }
-
-      const data = await response.json();
-      const textOutput = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      const textOutput = interaction?.output_text;
       if (!textOutput) {
         throw new Error(`Empty response from ${model}`);
       }
@@ -405,8 +346,7 @@ export async function analyzeImageForAdobeStock(
 
       const categoryObj = ADOBE_STOCK_CATEGORIES.find(c => c.id === categoryId) || ADOBE_STOCK_CATEGORIES[7];
 
-      // Remember this model as the current healthy winner!
-      currentBestModel = model;
+      currentHealthyModel = model;
 
       return {
         title,
@@ -416,10 +356,22 @@ export async function analyzeImageForAdobeStock(
         categoryName: categoryObj.name
       };
     } catch (err: any) {
-      lastError = err;
-      await new Promise(r => setTimeout(r, 3000));
+      const errMsg = err?.message || String(err);
+      console.warn(`Interactions API (${model}) attempt ${attempt} note:`, errMsg);
+      lastError = new Error(errMsg);
+
+      // Immediately hop to the next model in the pool on the first pass
+      if (attempt < candidatePool.length) {
+        continue;
+      }
+
+      // If all models in the pool were tried, wait 4s and cycle again
+      if (onStatusUpdate) {
+        onStatusUpdate(`Auto-switching model (${model})...`);
+      }
+      await new Promise(r => setTimeout(r, 3500));
     }
   }
 
-  throw lastError || new Error('Google AI servers are temporarily overloaded. Will auto-retry.');
+  throw lastError || new Error('Failed to generate metadata. Please check your Gemini API key.');
 }

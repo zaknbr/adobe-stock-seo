@@ -1,21 +1,25 @@
 import { AppSettings } from '../types';
 
-const SETTINGS_KEY = 'adobe_stock_seo_settings_v2';
+const SETTINGS_KEY = 'adobe_stock_seo_settings_v3';
 
-const RETIRED_MODELS = new Set([
+const LEGACY_OR_DEPRECATED_MODELS = new Set([
   'gemini-1.5-flash',
   'gemini-1.5-flash-latest',
   'gemini-1.5-pro',
   'gemini-2.0-flash',
   'gemini-2.0-flash-lite',
   'gemini-2.5-flash',
-  'gemini-2.5-flash-lite'
+  'gemini-2.5-flash-lite',
+  'gemini-3.8-flash',
+  'gemini-3.7-flash',
+  'gemini-3.6-flash',
+  'gemini-3.5-flash'
 ]);
 
 export const DEFAULT_SETTINGS: AppSettings = {
   geminiApiKey: '',
-  model: 'gemini-3.8-flash',
-  concurrency: 1, // Rock-solid 1-by-1 steady pacing (100 images in ~10-12 minutes with ZERO errors)
+  model: 'gemini-4-hydrogen',
+  concurrency: 1,
   batchSize: 1,
   autoStartOnUpload: true,
   targetKeywordCount: 50,
@@ -24,16 +28,15 @@ export const DEFAULT_SETTINGS: AppSettings = {
 };
 
 export function sanitizeStoredModel(modelName?: string): string {
-  if (!modelName) return 'gemini-3.8-flash';
+  if (!modelName) return 'gemini-4-hydrogen';
   const clean = modelName.replace('models/', '').trim();
   if (
     !clean ||
-    RETIRED_MODELS.has(clean) ||
+    LEGACY_OR_DEPRECATED_MODELS.has(clean) ||
     clean.startsWith('gemini-1.') ||
-    clean.startsWith('gemini-2.') ||
-    clean.includes('gemma')
+    clean.startsWith('gemini-2.')
   ) {
-    return 'gemini-3.8-flash';
+    return 'gemini-4-hydrogen';
   }
   return clean;
 }
@@ -52,10 +55,10 @@ export function parseApiKeys(rawKeys: string): string[] {
 
 export function loadSettings(): AppSettings {
   try {
-    // Also migrate API key from v1 if user had it saved earlier
-    const rawV2 = localStorage.getItem(SETTINGS_KEY);
+    const rawV3 = localStorage.getItem(SETTINGS_KEY);
+    const rawV2 = localStorage.getItem('adobe_stock_seo_settings_v2');
     const rawV1 = localStorage.getItem('adobe_stock_seo_settings_v1');
-    const raw = rawV2 || rawV1;
+    const raw = rawV3 || rawV2 || rawV1;
 
     if (raw) {
       const parsed = JSON.parse(raw);
@@ -64,11 +67,10 @@ export function loadSettings(): AppSettings {
         ...parsed,
         model: sanitizeStoredModel(parsed.model),
         titleStyle: parsed.titleStyle || 'hybrid_seo',
-        // If migrating from v1, reset concurrency to 1 and batchSize to 1 for rock-solid stability
-        concurrency: rawV2 ? Number(parsed.concurrency) || 1 : 1,
+        concurrency: rawV3 ? Number(parsed.concurrency) || 1 : 1,
         batchSize: 1
       };
-      if (!rawV2) {
+      if (!rawV3) {
         localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
       }
       return settings;
