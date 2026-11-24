@@ -193,7 +193,7 @@ export async function testGeminiConnection(rawApiKeys: string, preferredModel: s
   let lastErr = '';
   for (const model of modelsToTry) {
     try {
-      const client = new GoogleGenAI({ apiKey: keys[0] });
+      const client = new GoogleGenAI({ apiKey: keys[0], apiVersion: 'v1beta' });
       const interaction = await client.interactions.create({
         model,
         input: 'Respond with the word OK',
@@ -275,7 +275,7 @@ export async function analyzeImageForAdobeStock(
     }
 
     try {
-      const client = new GoogleGenAI({ apiKey: currentKey });
+      const client = new GoogleGenAI({ apiKey: currentKey, apiVersion: 'v1beta' });
       const isGemma = model.startsWith('gemma-');
 
       const interaction = await client.interactions.create({
