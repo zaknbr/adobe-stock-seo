@@ -66,7 +66,7 @@ ${styleGuidelines}
    Select the single best fitting Adobe Stock category ID:
    1: Animals | 2: Buildings and Architecture | 3: Business | 4: Drinks | 5: The Environment | 6: States of Mind | 7: Food | 8: Graphic Resources | 9: Hobbies and Leisure | 10: Industry | 11: Landscapes | 12: Lifestyle | 13: People | 14: Plants and Flowers | 15: Culture and Religion | 16: Science | 17: Social Issues | 18: Sports | 19: Technology | 20: Transport | 21: Travel
 
-Output ONLY valid JSON:
+Output ONLY valid JSON (do not wrap in markdown code fences):
 {
   "title": "180 to 200 character SEO title packed with description and high-volume search keywords",
   "keywords": ["keyword 1", "keyword 2", "...", "keyword 50"],
@@ -75,7 +75,10 @@ Output ONLY valid JSON:
 }
 
 let cachedDiscoveredModels: string[] = [];
+let lastKeyUsedForDiscovery = '';
 let keyRoundRobinCounter = 0;
+const deadModelsCache = new Set<string>();
+let currentBestModel = '';
 
 export function getNextApiKey(rawKeyString: string): string {
   const keys = parseApiKeys(rawKeyString);
@@ -90,6 +93,10 @@ export async function fetchAvailableModels(rawKeyString: string): Promise<string
   const apiKey = keys[0];
   if (!apiKey) return [];
 
+  if (cachedDiscoveredModels.length > 0 && lastKeyUsedForDiscovery === apiKey) {
+    return cachedDiscoveredModels;
+  }
+
   try {
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
     if (!res.ok) return [];
@@ -97,19 +104,59 @@ export async function fetchAvailableModels(rawKeyString: string): Promise<string
     if (data && Array.isArray(data.models)) {
       const models = data.models
         .filter((m: GeminiModelInfo) => {
-          const id = m.name.replace('models/', '');
-          if (!id.startsWith('gemini-3.')) return false;
-          if (id.includes('tts') || id.includes('embedding') || id.includes('audio')) return false;
+          const id = m.name.replace('models/', '').toLowerCase();
+          if (id.startsWith('gemini-1.') || id.startsWith('gemini-2.0') || id.startsWith('gemini-2.5-flash')) {
+            if (!id.includes('tts')) return false;
+          }
+          // Exclude non-vision/text-generation specialized models
+          if (
+            id.includes('tts') ||
+            id.includes('embedding') ||
+            id.includes('aqa') ||
+            id.includes('audio') ||
+            id.includes('imagen') ||
+            id.includes('veo') ||
+            id.includes('robotics') ||
+            id.includes('computer-use') ||
+            id.includes('thinking') ||
+            id.includes('learnlm') ||
+            id.includes('gemma-2-') ||
+            id.includes('gemma-3-1b') ||
+            id.includes('gemma-3-4b')
+          ) {
+            return false;
+          }
           return m.supportedGenerationMethods?.includes('generateContent');
         })
         .map((m: GeminiModelInfo) => m.name.replace('models/', ''));
+
       cachedDiscoveredModels = models;
+      lastKeyUsedForDiscovery = apiKey;
       return models;
     }
   } catch (e) {
     console.error('Failed to list Gemini models:', e);
   }
   return [];
+}
+
+function parseJsonSafely(rawText: string): any {
+  const cleaned = rawText
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      return JSON.parse(cleaned.substring(firstBrace, lastBrace + 1));
+    }
+    throw new Error('Could not parse JSON from model output');
+  }
 }
 
 function trimTitleSafely(title: string): string {
@@ -156,9 +203,61 @@ function extractRetrySeconds(errorMsg: string): number {
   return 0;
 }
 
+function buildRequestPayload(model: string, userPrompt: string, mimeType: string, cleanBase64: string, systemText: string) {
+  const isGemma = model.toLowerCase().includes('gemma');
+
+  if (isGemma) {
+    return {
+      contents: [
+        {
+          parts: [
+            { text: `${systemText}\n\n---\n\n${userPrompt}` },
+            {
+              inline_data: {
+                mime_type: mimeType || 'image/jpeg',
+                data: cleanBase64
+              }
+            }
+          ]
+        }
+      ],
+      generationConfig: {
+        temperature: 0.25,
+        topP: 0.95
+      }
+    };
+  }
+
+  return {
+    contents: [
+      {
+        parts: [
+          { text: userPrompt },
+          {
+            inline_data: {
+              mime_type: mimeType || 'image/jpeg',
+              data: cleanBase64
+            }
+          }
+        ]
+      }
+    ],
+    systemInstruction: {
+      parts: [{ text: systemText }]
+    },
+    generationConfig: {
+      temperature: 0.25,
+      topP: 0.95,
+      responseMimeType: 'application/json'
+    }
+  };
+}
+
 /**
- * Rock-solid single-image analyzer with patient auto-retry so 100 images complete
- * reliably in ~10-15 minutes with ZERO failed items.
+ * Unstoppable Image Analyzer:
+ * - Discovers all live models on the user's account via `v1beta/models`.
+ * - Cycles across every active vision model (`gemini-3.8-flash`, `gemini-3.5-flash-lite`, plus all discovered models including Gemma 4 31B/26B).
+ * - When Google has a temporary "High Demand" spike, it waits and retries with live countdown feedback instead of failing!
  */
 export async function analyzeImageForAdobeStock(
   base64Data: string,
@@ -175,6 +274,9 @@ export async function analyzeImageForAdobeStock(
     throw new Error('Google Gemini API Key is missing. Please add your API key in Settings.');
   }
 
+  // Auto-discover exact model IDs enabled on this API key
+  const discovered = await fetchAvailableModels(rawApiKeys);
+
   const cleanBase64 = base64Data.includes('base64,')
     ? base64Data.split('base64,')[1]
     : base64Data;
@@ -185,46 +287,38 @@ export async function analyzeImageForAdobeStock(
     ? `Visually inspect this transparent PNG image ("${fileName}"). It has an isolated transparent background (NO solid or black background). Generate an Adobe Stock Title (180-200 chars) combining a clear description ("... isolated on transparent background") followed by comma-separated high-volume search keyword clusters that buyers search for. Also generate 50 relevance-ordered keywords (top 10 most critical first) and category ID.`
     : `Visually inspect this image ("${fileName}"). Generate a high-converting Adobe Stock Title (180-200 chars) combining a clear visual description followed by comma-separated high-volume buyer search keyword clusters and synonyms to maximize search visibility. Also generate 50 relevance-ordered keywords (top 10 most critical first) and category ID.`;
 
-  const requestBody = {
-    contents: [
-      {
-        parts: [
-          { text: userPrompt },
-          {
-            inline_data: {
-              mime_type: mimeType || 'image/jpeg',
-              data: cleanBase64
-            }
-          }
-        ]
-      }
-    ],
-    systemInstruction: {
-      parts: [{ text: getSystemInstruction(titleStyle) }]
-    },
-    generationConfig: {
-      temperature: 0.25,
-      topP: 0.95,
-      responseMimeType: 'application/json'
-    }
-  };
-
+  const systemText = getSystemInstruction(titleStyle);
   const primaryModel = sanitizeStoredModel(preferredModel);
-  // Only the two proven, official, fast Gemini 3.x vision models on the user's account
-  const modelsToUse =
-    primaryModel === 'gemini-3.5-flash-lite'
-      ? ['gemini-3.5-flash-lite', 'gemini-3.8-flash']
-      : ['gemini-3.8-flash', 'gemini-3.5-flash-lite'];
+
+  // Build ordered pool of all candidate vision models on the user's account
+  const candidatePool = Array.from(
+    new Set(
+      [
+        currentBestModel,
+        primaryModel,
+        'gemini-3.8-flash',
+        'gemini-3.5-flash-lite',
+        ...discovered
+      ]
+        .filter(Boolean)
+        .filter(m => !deadModelsCache.has(m))
+    )
+  );
 
   let lastError: any = null;
 
-  // Patient retry loop (up to 6 attempts per image) so temporary high-demand or 429 cooldowns NEVER fail the item!
-  for (let attempt = 1; attempt <= 6; attempt++) {
-    const model = modelsToUse[(attempt - 1) % modelsToUse.length];
+  // Up to 12 attempts across our model pool so temporary 30-60 second Google "High Demand" spikes never break the batch
+  for (let attempt = 1; attempt <= 12; attempt++) {
+    const model = candidatePool[(attempt - 1) % candidatePool.length] || 'gemini-3.8-flash';
     const currentKey = getNextApiKey(rawApiKeys);
+
+    if (onStatusUpdate && attempt > 1) {
+      onStatusUpdate(`Trying ${model} (Attempt ${attempt})...`);
+    }
 
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${currentKey}`;
+      const requestBody = buildRequestPayload(model, userPrompt, mimeType, cleanBase64, systemText);
 
       const response = await fetch(url, {
         method: 'POST',
@@ -235,38 +329,36 @@ export async function analyzeImageForAdobeStock(
       if (!response.ok) {
         const errorData = await response.json().catch(() => null);
         const errorMsg = errorData?.error?.message || `HTTP ${response.status} ${response.statusText}`;
-        lastError = new Error(errorMsg);
 
-        // If rate limited with explicit retry-in seconds
-        const retrySec = extractRetrySeconds(errorMsg);
-        if (retrySec > 0 && attempt < 6) {
-          // If we can try the alternate model or alternate key first, only wait 2 seconds
-          const waitSec = attempt === 1 ? 2 : retrySec;
-          if (onStatusUpdate) {
-            onStatusUpdate(`Waiting ${waitSec}s for API cooldown...`);
-          }
-          await new Promise(r => setTimeout(r, waitSec * 1000));
+        // If model is not found or doesn't support image input (400/404), blacklist it for this session and immediately try next model!
+        if (
+          response.status === 404 ||
+          response.status === 400 ||
+          errorMsg.toLowerCase().includes('not found') ||
+          errorMsg.toLowerCase().includes('no longer available') ||
+          errorMsg.toLowerCase().includes('not supported') ||
+          errorMsg.toLowerCase().includes('multimodal') ||
+          errorMsg.toLowerCase().includes('image')
+        ) {
+          deadModelsCache.add(model);
           continue;
         }
 
-        // If temporary high demand (503) or overload, wait 3-6 seconds and automatically retry
-        if (
-          response.status === 503 ||
-          response.status === 429 ||
-          errorMsg.toLowerCase().includes('high demand') ||
-          errorMsg.toLowerCase().includes('overloaded') ||
-          errorMsg.toLowerCase().includes('quota')
-        ) {
-          if (attempt < 6) {
-            const backoffSec = attempt * 3;
-            if (onStatusUpdate) {
-              onStatusUpdate(`Server busy, auto-retrying in ${backoffSec}s (Attempt ${attempt + 1}/6)...`);
-            }
-            await new Promise(r => setTimeout(r, backoffSec * 1000));
-            continue;
-          }
+        lastError = new Error(errorMsg);
+
+        // If we haven't tried all models in the pool yet, immediately try the next model without waiting!
+        if (attempt < candidatePool.length) {
+          continue;
         }
 
+        // All models in pool were checked and Google is experiencing a temporary High Demand / 429 spike
+        const retrySec = extractRetrySeconds(errorMsg);
+        const waitSec = retrySec > 0 ? retrySec : Math.min(4 + attempt * 2, 20);
+
+        if (onStatusUpdate) {
+          onStatusUpdate(`Google AI Busy — Auto-waiting ${waitSec}s...`);
+        }
+        await new Promise(r => setTimeout(r, waitSec * 1000));
         continue;
       }
 
@@ -276,7 +368,7 @@ export async function analyzeImageForAdobeStock(
         throw new Error(`Empty response from ${model}`);
       }
 
-      const parsed = JSON.parse(textOutput);
+      const parsed = parseJsonSafely(textOutput);
 
       let rawKeywordsList: string[] = Array.isArray(parsed?.keywords)
         ? parsed.keywords
@@ -313,6 +405,9 @@ export async function analyzeImageForAdobeStock(
 
       const categoryObj = ADOBE_STOCK_CATEGORIES.find(c => c.id === categoryId) || ADOBE_STOCK_CATEGORIES[7];
 
+      // Remember this model as the current healthy winner!
+      currentBestModel = model;
+
       return {
         title,
         keywords: cleanedKeywords.slice(0, 50),
@@ -322,11 +417,9 @@ export async function analyzeImageForAdobeStock(
       };
     } catch (err: any) {
       lastError = err;
-      if (attempt < 6) {
-        await new Promise(r => setTimeout(r, attempt * 2500));
-      }
+      await new Promise(r => setTimeout(r, 3000));
     }
   }
 
-  throw lastError || new Error('Failed to generate metadata after 6 attempts.');
+  throw lastError || new Error('Google AI servers are temporarily overloaded. Will auto-retry.');
 }

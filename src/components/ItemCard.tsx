@@ -125,9 +125,11 @@ export const ItemCard: React.FC<ItemCardProps> = ({
 
             {/* Status Overlay */}
             {item.status === 'processing' && (
-              <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px] flex flex-col items-center justify-center text-blue-400 gap-1.5">
-                <Loader2 className="w-6 h-6 animate-spin" />
-                <span className="text-[11px] font-semibold">AI Inspecting...</span>
+              <div className="absolute inset-0 bg-black/70 backdrop-blur-[2px] flex flex-col items-center justify-center text-blue-400 gap-1.5 p-2 text-center">
+                <Loader2 className="w-6 h-6 animate-spin shrink-0" />
+                <span className="text-[10px] font-semibold leading-tight text-blue-200">
+                  {item.errorMessage || 'AI Inspecting...'}
+                </span>
               </div>
             )}
           </div>

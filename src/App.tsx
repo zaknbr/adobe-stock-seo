@@ -81,7 +81,7 @@ export function App() {
       // 1. Compress image (only the active 1-2 images are decoded in memory at a time!)
       const { base64, mimeType, isTransparent } = await fileToOptimizedBase64(currentItem.file);
 
-      // 2. Send to Gemini Vision AI with patient 6-attempt auto-backoff
+      // 2. Send to Gemini Vision AI with live status feedback & auto-backoff
       const result = await analyzeImageForAdobeStock(
         base64,
         mimeType,
@@ -89,7 +89,12 @@ export function App() {
         currentSettings.geminiApiKey,
         currentSettings.model || 'gemini-3.8-flash',
         isTransparent,
-        currentSettings.titleStyle || 'hybrid_seo'
+        currentSettings.titleStyle || 'hybrid_seo',
+        (statusMsg: string) => {
+          setItems(prev =>
+            prev.map(i => (i.id === itemId && i.status === 'processing' ? { ...i, errorMessage: statusMsg } : i))
+          );
+        }
       );
 
       const activeKeys = parseApiKeys(currentSettings.geminiApiKey);
@@ -110,6 +115,7 @@ export function App() {
                 category: result.category,
                 categoryName: result.categoryName,
                 status: 'completed',
+                errorMessage: undefined,
                 durationMs,
                 processedAt: Date.now()
               }
@@ -150,6 +156,31 @@ export function App() {
         const activeProcessing = currentList.filter(i => i.status === 'processing');
 
         if (pendingItems.length === 0 && activeProcessing.length === 0) {
+          // Auto-heal: if any items failed due to a long Google demand spike, automatically re-queue them after 8s!
+          const transientFailed = currentList.filter(
+            i =>
+              i.status === 'error' &&
+              (i.errorMessage?.toLowerCase().includes('high demand') ||
+                i.errorMessage?.toLowerCase().includes('quota') ||
+                i.errorMessage?.toLowerCase().includes('overloaded') ||
+                i.errorMessage?.toLowerCase().includes('busy'))
+          );
+          if (transientFailed.length > 0) {
+            await new Promise(r => setTimeout(r, 8000));
+            if (!isProcessingRef.current) break;
+            setItems(prev =>
+              prev.map(i =>
+                i.status === 'error' &&
+                (i.errorMessage?.toLowerCase().includes('high demand') ||
+                  i.errorMessage?.toLowerCase().includes('quota') ||
+                  i.errorMessage?.toLowerCase().includes('overloaded') ||
+                  i.errorMessage?.toLowerCase().includes('busy'))
+                  ? { ...i, status: 'pending', errorMessage: undefined }
+                  : i
+              )
+            );
+            continue;
+          }
           setIsProcessing(false);
           break;
         }
