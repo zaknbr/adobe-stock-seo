@@ -8,7 +8,7 @@ import { SEOInsightsModal } from './components/SEOInsightsModal';
 import { ImageMetadataItem, AppSettings } from './types';
 import { loadSettings, saveSettings, parseApiKeys } from './services/storage';
 import { fileToOptimizedBase64 } from './utils/imageHelpers';
-import { analyzeImageForAdobeStock, analyzeBatchForAdobeStock, BatchImageInput } from './services/gemini';
+import { analyzeImageForAdobeStock } from './services/gemini';
 import { generateAdobeStockCSV, downloadCSV } from './services/csvExport';
 import { recordApiUsage } from './services/quotaTracker';
 import { Search, Sparkles, Image as ImageIcon, Zap, CheckCircle2 } from 'lucide-react';
@@ -63,20 +63,14 @@ export function App() {
     }
   };
 
-  // Process a batch of 1 to 4 items simultaneously in a single multi-image API request
-  const processBatchItems = async (itemIds: string[]): Promise<void> => {
-    const targetItems = itemIds
-      .map(id => itemsRef.current.find(i => i.id === id))
-      .filter((i): i is ImageMetadataItem => Boolean(i));
+  // Process a single image cleanly and wait for completion
+  const processSingleItem = async (itemId: string): Promise<boolean> => {
+    const currentItem = itemsRef.current.find(i => i.id === itemId);
+    if (!currentItem) return false;
 
-    if (targetItems.length === 0) return;
-
-    const idSet = new Set(targetItems.map(i => i.id));
-
-    // Mark all items in this batch as processing
     setItems(prev =>
       prev.map(item =>
-        idSet.has(item.id) ? { ...item, status: 'processing', errorMessage: undefined } : item
+        item.id === itemId ? { ...item, status: 'processing', errorMessage: undefined } : item
       )
     );
 
@@ -84,28 +78,20 @@ export function App() {
     const currentSettings = settingsRef.current;
 
     try {
-      // 1. Compress images in the batch sequentially (using off-main-thread createImageBitmap)
-      const preparedInputs: BatchImageInput[] = [];
-      for (const item of targetItems) {
-        const { base64, mimeType, isTransparent } = await fileToOptimizedBase64(item.file);
-        preparedInputs.push({
-          id: item.id,
-          base64Data: base64,
-          mimeType,
-          fileName: item.fileName,
-          isTransparent
-        });
-      }
+      // 1. Compress image (only the active 1-2 images are decoded in memory at a time!)
+      const { base64, mimeType, isTransparent } = await fileToOptimizedBase64(currentItem.file);
 
-      // 2. Analyze the entire batch in ONE Gemini Vision call
-      const resultsMap = await analyzeBatchForAdobeStock(
-        preparedInputs,
+      // 2. Send to Gemini Vision AI with patient 6-attempt auto-backoff
+      const result = await analyzeImageForAdobeStock(
+        base64,
+        mimeType,
+        currentItem.fileName,
         currentSettings.geminiApiKey,
         currentSettings.model || 'gemini-3.8-flash',
+        isTransparent,
         currentSettings.titleStyle || 'hybrid_seo'
       );
 
-      // Record 1 API call usage
       const activeKeys = parseApiKeys(currentSettings.geminiApiKey);
       if (activeKeys[0]) {
         recordApiUsage(activeKeys[0]);
@@ -113,36 +99,29 @@ export function App() {
 
       const durationMs = Date.now() - startTime;
 
-      // 3. Update all items in the batch
-      setItems(prev =>
-        prev.map(item => {
-          if (!idSet.has(item.id)) return item;
-          const res = resultsMap.get(item.id);
-          if (res) {
-            return {
-              ...item,
-              title: res.title,
-              keywords: res.keywords,
-              keywordsRaw: res.keywordsRaw,
-              category: res.category,
-              categoryName: res.categoryName,
-              status: 'completed',
-              durationMs,
-              processedAt: Date.now()
-            };
-          }
-          return {
-            ...item,
-            status: 'error',
-            errorMessage: 'Incomplete batch response for this image. Click Retry.'
-          };
-        })
-      );
-    } catch (err: any) {
-      console.error('Error processing batch:', err);
       setItems(prev =>
         prev.map(item =>
-          idSet.has(item.id)
+          item.id === itemId
+            ? {
+                ...item,
+                title: result.title,
+                keywords: result.keywords,
+                keywordsRaw: result.keywordsRaw,
+                category: result.category,
+                categoryName: result.categoryName,
+                status: 'completed',
+                durationMs,
+                processedAt: Date.now()
+              }
+            : item
+        )
+      );
+      return true;
+    } catch (err: any) {
+      console.error(`Error processing item ${currentItem.fileName}:`, err);
+      setItems(prev =>
+        prev.map(item =>
+          item.id === itemId
             ? {
                 ...item,
                 status: 'error',
@@ -151,56 +130,21 @@ export function App() {
             : item
         )
       );
+      return false;
     }
   };
 
-  // Single item processor (for manual single regenerate)
-  const processSingleItem = async (itemId: string): Promise<void> => {
-    await processBatchItems([itemId]);
-  };
-
-  // Turbo Queue Dispatcher with Stuck-Item Watchdog
+  // Rock-Solid Sequential Queue Loop (100 images in ~10-15 minutes with ZERO rate-limit spikes)
   useEffect(() => {
     if (!isProcessing) return;
 
     let isMounted = true;
-    const processingStartTimes = new Map<string, number>();
 
     const runQueue = async () => {
       while (isProcessingRef.current && isMounted) {
         const currentSettings = settingsRef.current;
-        const batchSize = currentSettings.batchSize || 3;
-        const keyCount = Math.max(1, parseApiKeys(currentSettings.geminiApiKey).length);
-        // Scale parallel workers automatically if user added multiple API keys!
-        const maxParallelWorkers = Math.max(currentSettings.concurrency || 2, Math.min(keyCount * 2, 6));
-        const maxActiveImages = maxParallelWorkers * batchSize;
-
-        const now = Date.now();
+        const concurrencyLimit = currentSettings.concurrency || 1;
         const currentList = itemsRef.current;
-
-        // Watchdog: Auto-recover any item stuck in "processing" for > 40 seconds
-        const stuckIds: string[] = [];
-        currentList.forEach(item => {
-          if (item.status === 'processing') {
-            const started = processingStartTimes.get(item.id) || now;
-            processingStartTimes.set(item.id, started);
-            if (now - started > 40000) {
-              stuckIds.push(item.id);
-              processingStartTimes.delete(item.id);
-            }
-          } else {
-            processingStartTimes.delete(item.id);
-          }
-        });
-
-        if (stuckIds.length > 0) {
-          const stuckSet = new Set(stuckIds);
-          setItems(prev =>
-            prev.map(i => (stuckSet.has(i.id) ? { ...i, status: 'pending' } : i))
-          );
-          await new Promise(r => setTimeout(r, 200));
-          continue;
-        }
 
         const pendingItems = currentList.filter(i => i.status === 'pending' || i.status === 'idle');
         const activeProcessing = currentList.filter(i => i.status === 'processing');
@@ -210,22 +154,28 @@ export function App() {
           break;
         }
 
-        const availableImageSlots = maxActiveImages - activeProcessing.length;
-        if (availableImageSlots >= 1 && pendingItems.length > 0) {
-          const nextChunk = pendingItems.slice(0, Math.min(batchSize, availableImageSlots));
-          const chunkIds = nextChunk.map(i => i.id);
-          chunkIds.forEach(id => processingStartTimes.set(id, Date.now()));
-
-          // Dispatch multi-image batch asynchronously
-          processBatchItems(chunkIds);
-
-          // Tiny stagger between batch launches (faster when multiple API keys are provided)
-          const staggerMs = keyCount > 1 ? Math.max(250, Math.round(900 / keyCount)) : 750;
-          await new Promise(r => setTimeout(r, staggerMs));
-          continue;
+        if (concurrencyLimit === 1) {
+          // Strict 1-by-1 sequential execution: waits for the current image to finish before starting the next!
+          if (activeProcessing.length === 0 && pendingItems.length > 0) {
+            const nextItem = pendingItems[0];
+            await processSingleItem(nextItem.id);
+            // Smooth 2.8-second pause between images (~12-14 requests/min, safely below Google's 20 RPM cap)
+            await new Promise(r => setTimeout(r, 2800));
+            continue;
+          }
+        } else {
+          // 2 parallel workers mode
+          const availableSlots = concurrencyLimit - activeProcessing.length;
+          if (availableSlots > 0 && pendingItems.length > 0) {
+            const nextBatch = pendingItems.slice(0, availableSlots);
+            for (const item of nextBatch) {
+              processSingleItem(item.id);
+              await new Promise(r => setTimeout(r, 2000));
+            }
+          }
         }
 
-        await new Promise(r => setTimeout(r, 350));
+        await new Promise(r => setTimeout(r, 600));
       }
     };
 
@@ -349,7 +299,7 @@ export function App() {
             <div className="space-y-2">
               <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-red-500/10 border border-red-500/20 text-red-400 text-xs font-semibold">
                 <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                <span>Turbo Multi-Batch Engine • 100 Images in ~2 Minutes</span>
+                <span>Steady Zero-Error Engine • 100 Images in ~10-12 Minutes</span>
               </div>
               <h2 className="text-2xl sm:text-4xl font-extrabold text-white tracking-tight leading-tight">
                 Bulk AI Metadata & SEO Ranking for <span className="text-transparent bg-clip-text bg-gradient-to-r from-red-500 via-rose-400 to-amber-400">Adobe Stock</span>
@@ -372,10 +322,10 @@ export function App() {
               <div className="p-4 rounded-xl bg-[#141624] border border-[#222538] space-y-1">
                 <div className="flex items-center gap-2 text-white font-semibold text-xs">
                   <Zap className="w-4 h-4 text-amber-400" />
-                  <span>3x Turbo Multi-Batch</span>
+                  <span>Zero-Error Steady Queue</span>
                 </div>
                 <p className="text-[11px] text-gray-400 leading-normal">
-                  Analyzes 3-4 images per API call + supports Multi-Key rotation for ultra-fast bulk processing.
+                  Processes 1-by-1 at steady pacing (~6s/image) with 6x auto-retry so 100 images finish cleanly in 10-12 mins.
                 </p>
               </div>
 

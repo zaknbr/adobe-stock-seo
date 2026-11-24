@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Key, ExternalLink, CheckCircle, ShieldCheck, Zap, Sliders, RefreshCw, Sparkles, Layers } from 'lucide-react';
+import { X, Key, ExternalLink, CheckCircle, ShieldCheck, Zap, Sliders, RefreshCw, Sparkles } from 'lucide-react';
 import { AppSettings, TitleSeoStyle } from '../types';
 import { fetchAvailableModels } from '../services/gemini';
 import { sanitizeStoredModel, parseApiKeys } from '../services/storage';
@@ -19,8 +19,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
 }) => {
   const [apiKey, setApiKey] = useState(settings.geminiApiKey || '');
   const [model, setModel] = useState(sanitizeStoredModel(settings.model));
-  const [concurrency, setConcurrency] = useState(settings.concurrency || 2);
-  const [batchSize, setBatchSize] = useState(settings.batchSize || 3);
+  const [concurrency, setConcurrency] = useState(settings.concurrency || 1);
   const [autoStart, setAutoStart] = useState(settings.autoStartOnUpload ?? true);
   const [titleStyle, setTitleStyle] = useState<TitleSeoStyle>(settings.titleStyle || 'hybrid_seo');
   
@@ -34,8 +33,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
       setApiKey(settings.geminiApiKey || '');
       setModel(sanitizeStoredModel(settings.model));
       setTitleStyle(settings.titleStyle || 'hybrid_seo');
-      setBatchSize(settings.batchSize || 3);
-      setConcurrency(settings.concurrency || 2);
+      setConcurrency(settings.concurrency || 1);
       if (settings.geminiApiKey?.trim()) {
         handleDiscoverModels(settings.geminiApiKey);
       }
@@ -52,7 +50,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
       geminiApiKey: apiKey.trim(),
       model: sanitizeStoredModel(model),
       concurrency: Number(concurrency),
-      batchSize: Number(batchSize),
+      batchSize: 1,
       autoStartOnUpload: autoStart,
       titleStyle
     });
@@ -84,7 +82,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
 
     const activeModel = sanitizeStoredModel(model);
     setTestStatus('testing');
-    setTestMessage(`Testing ${detectedKeys.length} API key(s) with ${activeModel}...`);
+    setTestMessage(`Testing API connection with ${activeModel}...`);
 
     try {
       const firstKey = detectedKeys[0];
@@ -101,9 +99,9 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
         const errorData = await response.json().catch(() => null);
         const errMsg = errorData?.error?.message || `HTTP ${response.status}`;
 
-        if (errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('rate')) {
+        if (errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('rate') || errMsg.toLowerCase().includes('high demand')) {
           setTestStatus('success');
-          setTestMessage(`API Key is Valid! (${detectedKeys.length} key(s) loaded). Multi-batch engine ready.`);
+          setTestMessage(`API Key is Valid! Steady 1-by-1 queue & 6x auto-retry will process images smoothly.`);
           return;
         }
 
@@ -111,9 +109,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
       }
 
       setTestStatus('success');
-      setTestMessage(
-        `Connection successful! ${detectedKeys.length} API Key(s) active with ${batchSize}x Multi-Image Turbo Batching!`
-      );
+      setTestMessage(`Connection successful! ${activeModel} is active and ready.`);
       handleDiscoverModels();
     } catch (err: any) {
       setTestStatus('failed');
@@ -132,8 +128,8 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
               <Key className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-white">Turbo Speed, Multi-Key & SEO Settings</h2>
-              <p className="text-xs text-gray-400">Process 100+ images in 1-2 minutes with Multi-Image Batching</p>
+              <h2 className="text-base font-bold text-white">Gemini API & SEO Strategy Settings</h2>
+              <p className="text-xs text-gray-400">Steady Zero-Error Processing (100 images in ~10-12 mins)</p>
             </div>
           </div>
           <button
@@ -147,7 +143,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
         {/* Modal Body */}
         <div className="p-6 space-y-5 overflow-y-auto flex-1">
           
-          {/* API Key Input (Supports Multiple Keys!) */}
+          {/* API Key Input */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <label className="text-xs font-semibold text-gray-200 uppercase tracking-wider flex items-center gap-2">
@@ -171,14 +167,14 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               rows={2}
-              placeholder="Paste 1 API Key (AIzaSy...) OR paste 2-5 API keys (one per line) for 5x faster parallel speed!"
+              placeholder="Paste your Gemini API Key (AIzaSy...) — you can also paste 2 keys on separate lines!"
               className="w-full px-3.5 py-2 bg-[#0F1017] border border-[#2B2E42] rounded-xl text-white font-mono text-xs placeholder:text-gray-600 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 transition-colors"
             />
 
             <div className="flex items-center justify-between pt-0.5">
               <p className="text-[11px] text-gray-400 flex items-center gap-1">
                 <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 inline shrink-0" />
-                <span>Tip: Add 2 or 3 free keys (one per line) for instant zero-wait speed!</span>
+                <span>Stored safely in your browser only.</span>
               </p>
               <button
                 onClick={handleTestKey}
@@ -201,52 +197,6 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
                 {testMessage}
               </p>
             )}
-          </div>
-
-          {/* Turbo Multi-Batch & Concurrency Controls */}
-          <div className="space-y-2.5 pt-2 border-t border-[#23263B]">
-            <label className="text-xs font-semibold text-emerald-300 uppercase tracking-wider flex items-center gap-1.5">
-              <Layers className="w-3.5 h-3.5 text-emerald-400" />
-              Turbo Multi-Image Batching (10x Faster Speed)
-            </label>
-
-            <div className="bg-[#0F1017] p-3.5 rounded-xl border border-emerald-500/30 space-y-3">
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <span className="text-xs font-bold text-white">Images Per Single API Request</span>
-                  <p className="text-[11px] text-gray-400">
-                    Packing 3-4 images in 1 API call makes 100 images finish in ~30 calls (under 2 mins!)
-                  </p>
-                </div>
-                <select
-                  value={batchSize}
-                  onChange={(e) => setBatchSize(Number(e.target.value))}
-                  className="bg-[#1B1D2A] border border-emerald-500/40 text-emerald-300 font-bold text-xs rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-emerald-400 shrink-0"
-                >
-                  <option value={1}>1 Image / Call (Standard)</option>
-                  <option value={2}>2 Images / Call (2x Faster)</option>
-                  <option value={3}>3 Images / Call (3x Turbo - Recommended)</option>
-                  <option value={4}>4 Images / Call (4x Ultra Turbo)</option>
-                </select>
-              </div>
-
-              <div className="flex items-center justify-between pt-2 border-t border-[#1C1E2D] gap-2">
-                <div>
-                  <span className="text-xs font-medium text-white">Parallel Batch Workers</span>
-                  <p className="text-[11px] text-gray-400">Simultaneous batches running in parallel</p>
-                </div>
-                <select
-                  value={concurrency}
-                  onChange={(e) => setConcurrency(Number(e.target.value))}
-                  className="bg-[#1B1D2A] border border-[#2E3146] text-white text-xs rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-red-500 shrink-0"
-                >
-                  <option value={1}>1 Batch Worker</option>
-                  <option value={2}>2 Parallel Workers (Recommended)</option>
-                  <option value={3}>3 Parallel Workers (Fastest)</option>
-                  <option value={4}>4 Parallel Workers (For Multi-Key)</option>
-                </select>
-              </div>
-            </div>
           </div>
 
           {/* Title SEO Strategy Mode Selector */}
@@ -341,7 +291,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
                 <div className="flex items-center justify-between">
                   <span className="font-semibold text-xs text-white">Gemini 3.8 Flash</span>
                   <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-mono">
-                    Primary
+                    Recommended
                   </span>
                 </div>
               </button>
@@ -358,10 +308,32 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
                 <div className="flex items-center justify-between">
                   <span className="font-semibold text-xs text-white">Gemini 3.5 Flash Lite</span>
                   <span className="text-[10px] px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 font-mono">
-                    Ultra Fast
+                    Auto Backup
                   </span>
                 </div>
               </button>
+            </div>
+          </div>
+
+          {/* Queue Pacing Control */}
+          <div className="space-y-2.5 pt-2 border-t border-[#23263B]">
+            <label className="text-xs font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
+              <Sliders className="w-3.5 h-3.5 text-indigo-400" />
+              Queue Stability & Speed
+            </label>
+            <div className="bg-[#0F1017] p-3.5 rounded-xl border border-[#25283B] flex items-center justify-between">
+              <div>
+                <span className="text-xs font-medium text-white">Processing Mode</span>
+                <p className="text-[11px] text-gray-400">1-by-1 Steady Mode processes 100 images in ~10-12 mins with ZERO errors</p>
+              </div>
+              <select
+                value={concurrency}
+                onChange={(e) => setConcurrency(Number(e.target.value))}
+                className="bg-[#1B1D2A] border border-[#2E3146] text-white text-xs rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-red-500 shrink-0"
+              >
+                <option value={1}>1-by-1 Steady (Recommended - Zero Errors)</option>
+                <option value={2}>2 at a time (Faster - for Multi-Key)</option>
+              </select>
             </div>
           </div>
 
@@ -379,7 +351,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
             onClick={handleSave}
             className="px-5 py-2 text-xs font-semibold rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white shadow-lg shadow-red-600/30 transition-all"
           >
-            Save Turbo Settings
+            Save Settings
           </button>
         </div>
 

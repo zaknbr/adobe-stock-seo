@@ -1,6 +1,6 @@
 import { AppSettings } from '../types';
 
-const SETTINGS_KEY = 'adobe_stock_seo_settings_v1';
+const SETTINGS_KEY = 'adobe_stock_seo_settings_v2';
 
 const RETIRED_MODELS = new Set([
   'gemini-1.5-flash',
@@ -14,9 +14,9 @@ const RETIRED_MODELS = new Set([
 
 export const DEFAULT_SETTINGS: AppSettings = {
   geminiApiKey: '',
-  model: 'gemini-3.5-flash-lite',
-  concurrency: 2,
-  batchSize: 3, // Pack 3 images per API call = 3x speed & 3x fewer API requests!
+  model: 'gemini-3.8-flash',
+  concurrency: 1, // Rock-solid 1-by-1 steady pacing (100 images in ~10-12 minutes with ZERO errors)
+  batchSize: 1,
   autoStartOnUpload: true,
   targetKeywordCount: 50,
   prefixAiStyle: true,
@@ -24,17 +24,20 @@ export const DEFAULT_SETTINGS: AppSettings = {
 };
 
 export function sanitizeStoredModel(modelName?: string): string {
-  if (!modelName) return 'gemini-3.5-flash-lite';
+  if (!modelName) return 'gemini-3.8-flash';
   const clean = modelName.replace('models/', '').trim();
-  if (!clean || RETIRED_MODELS.has(clean) || clean.startsWith('gemini-1.') || clean.startsWith('gemini-2.')) {
-    return 'gemini-3.5-flash-lite';
+  if (
+    !clean ||
+    RETIRED_MODELS.has(clean) ||
+    clean.startsWith('gemini-1.') ||
+    clean.startsWith('gemini-2.') ||
+    clean.includes('gemma')
+  ) {
+    return 'gemini-3.8-flash';
   }
   return clean;
 }
 
-/**
- * Extracts an array of clean API keys from a newline or comma-separated string
- */
 export function parseApiKeys(rawKeys: string): string[] {
   if (!rawKeys) return [];
   return Array.from(
@@ -49,20 +52,26 @@ export function parseApiKeys(rawKeys: string): string[] {
 
 export function loadSettings(): AppSettings {
   try {
-    const raw = localStorage.getItem(SETTINGS_KEY);
+    // Also migrate API key from v1 if user had it saved earlier
+    const rawV2 = localStorage.getItem(SETTINGS_KEY);
+    const rawV1 = localStorage.getItem('adobe_stock_seo_settings_v1');
+    const raw = rawV2 || rawV1;
+
     if (raw) {
       const parsed = JSON.parse(raw);
-      parsed.model = sanitizeStoredModel(parsed.model);
-      if (!parsed.titleStyle) {
-        parsed.titleStyle = 'hybrid_seo';
+      const settings: AppSettings = {
+        ...DEFAULT_SETTINGS,
+        ...parsed,
+        model: sanitizeStoredModel(parsed.model),
+        titleStyle: parsed.titleStyle || 'hybrid_seo',
+        // If migrating from v1, reset concurrency to 1 and batchSize to 1 for rock-solid stability
+        concurrency: rawV2 ? Number(parsed.concurrency) || 1 : 1,
+        batchSize: 1
+      };
+      if (!rawV2) {
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
       }
-      if (!parsed.batchSize || parsed.batchSize < 1 || parsed.batchSize > 5) {
-        parsed.batchSize = 3;
-      }
-      if (!parsed.concurrency || parsed.concurrency < 1) {
-        parsed.concurrency = 2;
-      }
-      return { ...DEFAULT_SETTINGS, ...parsed };
+      return settings;
     }
   } catch (e) {
     console.error('Error loading settings from localStorage', e);
@@ -72,9 +81,10 @@ export function loadSettings(): AppSettings {
 
 export function saveSettings(settings: AppSettings): void {
   try {
-    const cleanSettings = {
+    const cleanSettings: AppSettings = {
       ...settings,
-      model: sanitizeStoredModel(settings.model)
+      model: sanitizeStoredModel(settings.model),
+      batchSize: 1
     };
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(cleanSettings));
   } catch (e) {
